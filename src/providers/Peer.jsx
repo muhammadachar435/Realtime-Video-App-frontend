@@ -38,16 +38,28 @@ function PeerProvider({ children }) {
       }
     };
 
+    
     // Handle ICE candidate from remote
+
+
+    
     if (socket) {
-      socket.on("ice-candidate", ({ candidate }) => {
-        if (candidate && pc.remoteDescription) {
-          console.log("Adding remote ICE candidate:", candidate);
-          pc.addIceCandidate(new RTCIceCandidate(candidate)).catch((err) =>
-            console.error("Error adding ICE candidate:", err),
-          );
-        }
-      });
+    const pendingCandidates = [];
+
+socket.on("ice-candidate", ({ candidate }) => {
+  if (!candidate) return;
+  if (peer.remoteDescription) {
+    peer.addIceCandidate(new RTCIceCandidate(candidate)).catch(console.error);
+  } else {
+    pendingCandidates.push(candidate);
+  }
+});
+
+// After setting remote description:
+await peer.setRemoteDescription(new RTCSessionDescription(ans));
+pendingCandidates.forEach(c => peer.addIceCandidate(new RTCIceCandidate(c)));
+pendingCandidates.length = 0;
+
     }
 
     peerRef.current = pc;
