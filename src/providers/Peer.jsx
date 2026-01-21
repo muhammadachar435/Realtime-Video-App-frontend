@@ -43,22 +43,34 @@ function PeerProvider({ children }) {
       }
     };
 
+    const pendingCandidates = [];
+    
     // Handle ICE candidate from remote
-    if (socket) {
+    // if (socket) {
       socket.on("ice-candidate", ({ candidate }) => {
-        if (candidate && pc.remoteDescription) {
-          console.log("Adding remote ICE candidate:", candidate);
-          pc.addIceCandidate(new RTCIceCandidate(candidate)).catch((err) =>
-            console.error("Error adding ICE candidate:", err),
-          );
-        }
-      });
+        if (candidate) {
+    if (pc.remoteDescription) {
+      pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(console.error);
+    } else {
+      pendingCandidates.push(candidate);
     }
+  }
+      });
+    // After setting remoteDescription:
+pendingCandidates.forEach(c => pc.addIceCandidate(new RTCIceCandidate(c)));
+pendingCandidates.length = 0;
+    // }
 
+    
     peerRef.current = pc;
     return pc;
   }, [socket]);
 
+  
+  peer.onconnectionstatechange = () => console.log(peer.connectionState);
+  peer.oniceconnectionstatechange = () => console.log(peer.iceConnectionState);
+  
+  
   const createOffer = async (remoteSocketIdRef) => {
     try {
       const offer = await peer.createOffer({
