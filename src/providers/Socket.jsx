@@ -8,7 +8,7 @@ const SocketContext = createContext();
 const SocketProvider = ({ children }) => {
   const socket = useMemo(() => 
     io("https://realtime-video-app-backend-production.up.railway.app", {
-      transports: ["websocket"], // force websocket, avoid polling
+      transports: ["polling","websocket"], // force websocket, avoid polling
       withCredentials: true,
     }),
     [] // dependencies array
