@@ -6,7 +6,7 @@ const SocketContext = createContext();
 
 // SocketProvider Component
 const SocketProvider = ({ children }) => {
-  const socket = useMemo(() => io(`http://localhost:5001`), []);
+  const socket = useMemo(() => io(`https://realtime-video-app-backend-production.up.railway.app`), []);
   return <SocketContext.Provider value={{ socket }}>{children}</SocketContext.Provider>;
 };
 
