@@ -6,7 +6,10 @@ const SocketContext = createContext();
 
 // SocketProvider Component
 const SocketProvider = ({ children }) => {
-  const socket = useMemo(() => io(`https://realtime-video-app-backend-production.up.railway.app`), []);
+  const socket = useMemo(() => io(`https://realtime-video-app-backend-production.up.railway.app`),  {
+  transports: ["websocket"], // force websocket, avoid polling
+  withCredentials: true,
+});
   return <SocketContext.Provider value={{ socket }}>{children}</SocketContext.Provider>;
 };
 
