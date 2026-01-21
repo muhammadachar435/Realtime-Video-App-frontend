@@ -24,6 +24,11 @@ function PeerProvider({ children }) {
             "stun:stun4.l.google.com:19302",
           ],
         },
+         { 
+      urls: "turn:turn.yourserver.com:3478",
+      username: "user",
+      credential: "pass"
+    }
       ],
     });
 
