@@ -45,8 +45,7 @@ function PeerProvider({ children }) {
     
     if (socket) {
     const pendingCandidates = [];
-
-socket.on("ice-candidate", ({ candidate }) => {
+  socket.on("ice-candidate", ({ candidate }) => {
   if (!candidate) return;
   if (peer.remoteDescription) {
     peer.addIceCandidate(new RTCIceCandidate(candidate)).catch(console.error);
