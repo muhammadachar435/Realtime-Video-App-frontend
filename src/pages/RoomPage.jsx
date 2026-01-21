@@ -96,136 +96,82 @@ const RoomPage = () => {
   }, [socket, peer]);
 
   // ------------------ Remote Track ------------------
-useEffect(() => {
-  let playTimeout;
+  useEffect(() => {
+    let playTimeout;
 
-  const handleTrackEvent = (event) => {
-    console.log("🎬 Track event received:", event.track.kind);
-    console.log("Number of streams:", event.streams.length);
-    
-    if (event.streams && event.streams[0]) {
-      remoteStreamRef.current = event.streams[0];
-      
-      console.log("Remote stream info:", {
-        id: remoteStreamRef.current.id,
-        active: remoteStreamRef.current.active,
-        videoTracks: remoteStreamRef.current.getVideoTracks().length,
-        audioTracks: remoteStreamRef.current.getAudioTracks().length
-      });
+    // handleTrackEvent
+    const handleTrackEvent = (event) => {
+      if (event.streams && event.streams[0]) {
+        remoteStreamRef.current = event.streams[0];
 
-      if (remoteVideoRef.current) {
-        console.log("Setting remote video source");
-        remoteVideoRef.current.srcObject = remoteStreamRef.current;
+        if (remoteVideoRef.current) {
+          remoteVideoRef.current.srcObject = remoteStreamRef.current;
 
-        // Add event listeners for debugging
-        remoteVideoRef.current.onloadedmetadata = () => {
-          console.log("✅ Remote video metadata loaded");
-          console.log("Video dimensions:", 
-            remoteVideoRef.current.videoWidth, 
-            "x", 
-            remoteVideoRef.current.videoHeight
-          );
-        };
-
-        remoteVideoRef.current.oncanplay = () => {
-          console.log("✅ Remote video can play");
-          handleRemoteVideoReady();
-        };
-
-        remoteVideoRef.current.onerror = (e) => {
-          console.error("❌ Remote video error:", e);
-        };
-
-        // Play the video
-        clearTimeout(playTimeout);
-        playTimeout = setTimeout(() => {
-          console.log("Attempting to play remote video");
-          remoteVideoRef.current.play()
-            .then(() => console.log("✅ Remote video playing"))
-            .catch((err) => {
-              if (err.name !== "AbortError") {
-                console.error("❌ Failed to play remote video:", err);
-              }
-            });
-        }, 100);
+          // Small delay to avoid AbortError
+          clearTimeout(playTimeout);
+          playTimeout = setTimeout(() => {
+            // Only play if paused
+            if (remoteVideoRef.current.paused) {
+              remoteVideoRef.current.play().catch((err) => {
+                if (err.name !== "AbortError") console.error(err);
+              });
+            }
+          }, 50); // 50ms delay is enough
+        }
       }
-    }
-  };
+    };
 
-  peer.addEventListener("track", handleTrackEvent);
-  
-  return () => {
-    peer.removeEventListener("track", handleTrackEvent);
-    clearTimeout(playTimeout);
-  };
-}, [peer]);
+    peer.addEventListener("track", handleTrackEvent);
+    return () => {
+      peer.removeEventListener("track", handleTrackEvent);
+      clearTimeout(playTimeout);
+    };
+  }, [peer]);
 
   // ------------------ New User Joined ------------------
- const handleNewUserJoined = useCallback(
-  async ({ emailId, name, socketId }) => {
-    console.log("🟢 New user joined:", { emailId, name, socketId });
-    
-    // ALWAYS set remote name immediately
-    dispatch({ type: "SET_REMOTE_EMAIL", payload: emailId });
-    dispatch({ type: "SET_REMOTE_NAME", payload: name });
+  const handleNewUserJoined = useCallback(
+    async ({ emailId, name, socketId }) => {
+      // ALWAYS set remote name immediately
+      dispatch({ type: "SET_REMOTE_EMAIL", payload: emailId });
+      dispatch({ type: "SET_REMOTE_NAME", payload: name });
 
-    // Store pending call if stream is not ready
-    if (!state.streamReady) {
-      console.log("⏳ Stream not ready, storing pending call");
-      pendingIncomingCall.current = { fromEmail: emailId, fromName: name, socketId };
-      return;
-    }
+      // Store pending call if stream is not ready
+      if (!state.streamReady) {
+        pendingIncomingCall.current = { fromEmail: emailId, fromName: name, socketId };
+        return;
+      }
 
-    try {
-      console.log("📞 Creating offer for:", socketId);
-      const offer = await createOffer(socketId);
-      
-      console.log("📤 Sending offer to socket:", socketId);
-      socket.emit("call-user", { 
-        to: socketId, 
-        emailId, 
-        name,
-        offer 
-      });
-      
-    } catch (err) {
-      console.error("❌ Error creating offer:", err);
-    }
-  },
-  [createOffer, socket, state.streamReady],
-);
+      try {
+        const offer = await createOffer(socketId);
+        socket.emit("call-user", { emailId, offer });
+      } catch (err) {
+        console.error("Error creating offer:", err);
+      }
+    },
+    [createOffer, socket, state.streamReady],
+  );
 
   // ------------------ Incoming Call ------------------
-const handleIncomingCall = useCallback(
-  async ({ from, offer, fromName, fromSocketId }) => {
-    console.log("📞 Incoming call from:", { from, fromName, fromSocketId });
-    
-    dispatch({ type: "SET_REMOTE_EMAIL", payload: from });
-    dispatch({ type: "SET_REMOTE_NAME", payload: fromName });
+  const handleIncomingCall = useCallback(
+    async ({ from, offer, fromName }) => {
+      dispatch({ type: "SET_REMOTE_EMAIL", payload: from });
+      dispatch({ type: "SET_REMOTE_NAME", payload: fromName });
 
-    if (!state.streamReady) {
-      console.log("⏳ Stream not ready, storing pending call");
-      pendingIncomingCall.current = { from, offer, fromName, fromSocketId };
-      return;
-    }
+      if (!state.streamReady) {
+        pendingIncomingCall.current = { from, offer, fromName };
+        return;
+      }
 
-    try {
-      console.log("📝 Creating answer");
-      const answer = await createAnswer(offer, fromSocketId);
-      
-      console.log("📤 Sending answer to:", fromSocketId);
-      socket.emit("call-accepted", { 
-        to: fromSocketId, 
-        ans: answer 
-      });
-      
-    } catch (err) {
-      console.error("❌ Error creating answer:", err);
-    }
-  },
-  [createAnswer, socket, state.streamReady],
-);
-  
+      try {
+        const answer = await createAnswer(offer);
+        socket.emit("call-accepted", { to: from, ans: answer });
+      } catch (err) {
+        console.error("Error creating answer:", err);
+      }
+    },
+    [createAnswer, socket, state.streamReady],
+  );
+
   // ------------------ Call Accepted ------------------
   const handleCallAccepted = useCallback(
     async ({ ans }) => {
@@ -848,3 +794,4 @@ const handleIncomingCall = useCallback(
 };
 
 export default RoomPage;
+
