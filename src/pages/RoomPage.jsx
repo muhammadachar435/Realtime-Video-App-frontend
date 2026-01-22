@@ -37,7 +37,7 @@ import toast, { Toaster } from "react-hot-toast";
 const RoomPage = () => {
   // Socket Destruction
   const { socket } = useSocket();
-  const { peer, createOffer, createAnswer, setRemoteAns, sendStream } = usePeer();
+  const { peer, createOffer, createAnswer, setRemoteAns, sendStream, setRemoteSocketId } = usePeer();
 
   // RoomID
   const { roomId } = useParams();
@@ -50,10 +50,10 @@ const RoomPage = () => {
   const myVideoRef = useRef();
   const remoteVideoRef = useRef();
   const remoteStreamRef = useRef(null);
+  const remoteSocketIdRef = useRef(null);
 
   // totalUsers
   const totalUsers = useMemo(() => (state.remoteName ? 2 : 1), [state.remoteName]);
-  // console.log("Total Users:", totalUsers);
 
   // Helper function to format call duration
   const getCallDurationText = () => {
@@ -80,66 +80,83 @@ const RoomPage = () => {
     return durationText.trim();
   };
 
-  // ------------------ ICE Candidates ------------------
-  // WebRTC uses ICE candidates to find the best path for connecting peers
-  // ------------------ ICE Candidates ------------------
-useEffect(() => {
-  if (!socket || !peer) return;
-  
-  const handleIceCandidate = async ({ candidate, from }) => {
-    console.log("📥 Received ICE candidate from:", from);
-    
-    if (candidate) {
-      try {
-        // Try to add immediately
-        if (peer.remoteDescription && peer.remoteDescription.type) {
-          await peer.addIceCandidate(new RTCIceCandidate(candidate));
-          console.log("ICE candidate added successfully");
-        } else {
-          // Try again after a delay
-          setTimeout(async () => {
-            if (peer.remoteDescription) {
-              await peer.addIceCandidate(new RTCIceCandidate(candidate));
-              console.log("ICE candidate added (delayed)");
-            }
-          }, 1000);
-        }
-      } catch (err) {
-        console.error("Error adding ICE candidate:", err);
-      }
-    }
-  };
-  
-  socket.on("ice-candidate", handleIceCandidate);
-  
-  return () => {
-    socket.off("ice-candidate", handleIceCandidate);
-  };
-}, [socket, peer]);
+  // ------------------ Debug WebRTC Connection ------------------
+  useEffect(() => {
+    if (!peer) return;
 
-// Add this with your other functions
-const retryConnection = useCallback(() => {
-  if (state.remoteEmail && socket) {
-    console.log("🔄 Retrying connection...");
-    
-    // Re-create peer connection
-    if (peer) {
-      peer.close();
-    }
-    
-    // Re-initiate call
-    setTimeout(() => {
-      if (state.remoteEmail && state.remoteName) {
-        handleNewUserJoined({
-          emailId: state.remoteEmail,
-          name: state.remoteName,
-          socketId: remoteSocketIdRef.current
+    const logConnectionState = () => {
+      console.log("🔍 WebRTC Debug Info:", {
+        connectionState: peer.connectionState,
+        iceConnectionState: peer.iceConnectionState,
+        iceGatheringState: peer.iceGatheringState,
+        signalingState: peer.signalingState,
+      });
+    };
+
+    peer.addEventListener('connectionstatechange', logConnectionState);
+    peer.addEventListener('iceconnectionstatechange', logConnectionState);
+    peer.addEventListener('icegatheringstatechange', logConnectionState);
+    peer.addEventListener('signalingstatechange', logConnectionState);
+
+    return () => {
+      peer.removeEventListener('connectionstatechange', logConnectionState);
+      peer.removeEventListener('iceconnectionstatechange', logConnectionState);
+      peer.removeEventListener('icegatheringstatechange', logConnectionState);
+      peer.removeEventListener('signalingstatechange', logConnectionState);
+    };
+  }, [peer]);
+
+  // ------------------ ICE Candidates ------------------
+  useEffect(() => {
+    if (!socket || !peer) return;
+
+    // Handle incoming ICE candidates
+    const handleIncomingIceCandidate = ({ candidate, from }) => {
+      console.log("📥 Received ICE candidate from:", from, candidate);
+      if (candidate && peer.remoteDescription) {
+        peer.addIceCandidate(new RTCIceCandidate(candidate)).catch(err => {
+          console.error("❌ Error adding ICE candidate:", err);
         });
       }
-    }, 1000);
-  }
-}, [state.remoteEmail, state.remoteName, socket, peer, handleNewUserJoined]);
-  
+    };
+
+    // Handle local ICE candidate generation
+    const handleLocalIceCandidate = (event) => {
+      if (event.candidate && remoteSocketIdRef.current && socket) {
+        console.log("📤 Sending ICE candidate to:", remoteSocketIdRef.current, event.candidate);
+        socket.emit("ice-candidate", {
+          to: remoteSocketIdRef.current,
+          candidate: event.candidate,
+        });
+      }
+    };
+
+    // Set up event listeners
+    socket.on("ice-candidate", handleIncomingIceCandidate);
+    peer.onicecandidate = handleLocalIceCandidate;
+
+    // Handle ICE connection state changes
+    peer.oniceconnectionstatechange = () => {
+      console.log("❄️ ICE Connection State:", peer.iceConnectionState);
+      if (peer.iceConnectionState === "failed") {
+        console.log("🔄 ICE failed, trying to restart...");
+        try {
+          peer.restartIce();
+        } catch (err) {
+          console.error("❌ Failed to restart ICE:", err);
+        }
+      }
+    };
+
+    return () => {
+      socket.off("ice-candidate", handleIncomingIceCandidate);
+      if (peer) {
+        peer.onicecandidate = null;
+        peer.oniceconnectionstatechange = null;
+      }
+    };
+  }, [socket, peer]);
+
   // ------------------ Remote Track ------------------
   useEffect(() => {
     let playTimeout;
@@ -158,7 +175,7 @@ const retryConnection = useCallback(() => {
             // Only play if paused
             if (remoteVideoRef.current.paused) {
               remoteVideoRef.current.play().catch((err) => {
-                if (err.name !== "AbortError") console.error(err);
+                if (err.name !== "AbortError") console.error("❌ Error playing remote video:", err);
               });
             }
           }, 50); // 50ms delay is enough
@@ -179,21 +196,35 @@ const retryConnection = useCallback(() => {
       // ALWAYS set remote name immediately
       dispatch({ type: "SET_REMOTE_EMAIL", payload: emailId });
       dispatch({ type: "SET_REMOTE_NAME", payload: name });
+      
+      // Store remote socket ID for ICE candidates
+      remoteSocketIdRef.current = socketId;
+      if (setRemoteSocketId) {
+        setRemoteSocketId(socketId);
+      }
+      console.log("✅ Remote socket ID stored:", socketId);
 
       // Store pending call if stream is not ready
       if (!state.streamReady) {
         pendingIncomingCall.current = { fromEmail: emailId, fromName: name, socketId };
+        console.log("⏳ Stream not ready, call pending...");
         return;
       }
 
       try {
-        const offer = await createOffer(socketId);
-        socket.emit("call-user", { emailId, offer });
+        console.log("📞 Creating offer for:", emailId);
+        const offer = await createOffer();
+        socket.emit("call-user", { 
+          emailId, 
+          offer,
+          socketId: socketId
+        });
+        console.log("📨 Offer sent to:", emailId);
       } catch (err) {
-        console.error("Error creating offer:", err);
+        console.error("❌ Error creating offer:", err);
       }
     },
-    [createOffer, socket, state.streamReady],
+    [createOffer, socket, state.streamReady, setRemoteSocketId],
   );
 
   // ------------------ Incoming Call ------------------
@@ -201,29 +232,44 @@ const retryConnection = useCallback(() => {
     async ({ from, offer, fromName }) => {
       dispatch({ type: "SET_REMOTE_EMAIL", payload: from });
       dispatch({ type: "SET_REMOTE_NAME", payload: fromName });
+      
+      // Store remote socket ID
+      remoteSocketIdRef.current = from;
+      if (setRemoteSocketId) {
+        setRemoteSocketId(from);
+      }
+      console.log("📲 Incoming call from socket ID:", from);
 
       if (!state.streamReady) {
         pendingIncomingCall.current = { from, offer, fromName };
+        console.log("⏳ Stream not ready, incoming call pending...");
         return;
       }
 
       try {
+        console.log("📝 Creating answer for:", from);
         const answer = await createAnswer(offer);
-        socket.emit("call-accepted", { to: from, ans: answer });
+        socket.emit("call-accepted", { 
+          to: from, 
+          ans: answer 
+        });
+        console.log("📨 Answer sent to:", from);
       } catch (err) {
-        console.error("Error creating answer:", err);
+        console.error("❌ Error creating answer:", err);
       }
     },
-    [createAnswer, socket, state.streamReady],
+    [createAnswer, socket, state.streamReady, setRemoteSocketId],
   );
 
   // ------------------ Call Accepted ------------------
   const handleCallAccepted = useCallback(
     async ({ ans }) => {
       try {
+        console.log("✅ Setting remote answer");
         await setRemoteAns(ans);
+        console.log("✅ Remote answer set successfully");
       } catch (err) {
-        console.error("Error setting remote answer:", err);
+        console.error("❌ Error setting remote answer:", err);
       }
     },
     [setRemoteAns],
@@ -232,23 +278,33 @@ const retryConnection = useCallback(() => {
   // ------------------ Local Media ------------------
   const getUserMediaStream = useCallback(async () => {
     try {
+      console.log("🎥 Requesting camera and microphone access...");
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } },
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       });
 
+      console.log("✅ Media devices accessed successfully");
       dispatch({ type: "SET_MY_STREAM", payload: stream });
-      if (myVideoRef.current) myVideoRef.current.srcObject = stream;
+      
+      if (myVideoRef.current) {
+        myVideoRef.current.srcObject = stream;
+        console.log("✅ Local video stream attached");
+      }
+      
       await sendStream(stream);
       dispatch({ type: "SET_STREAM_READY", payload: true });
+      console.log("✅ Stream ready for WebRTC");
 
       // Handle pending incoming call automatically
       if (pendingIncomingCall.current) {
+        console.log("🔄 Processing pending incoming call...");
         handleIncomingCall(pendingIncomingCall.current);
         pendingIncomingCall.current = null;
       }
     } catch (err) {
-      console.error("Error accessing media devices:", err);
+      console.error("❌ Error accessing media devices:", err);
+      toast.error("Failed to access camera/microphone");
     }
   }, [sendStream, handleIncomingCall]);
 
@@ -259,8 +315,13 @@ const retryConnection = useCallback(() => {
   // If remote video is not received yet, retry connecting after 1 second
   useEffect(() => {
     if (!remoteStreamRef.current && state.remoteEmail && state.streamReady) {
+      console.log("🔄 Retrying connection to remote user...");
       const retry = setTimeout(() => {
-        handleNewUserJoined({ emailId: state.remoteEmail, name: state.remoteName });
+        handleNewUserJoined({ 
+          emailId: state.remoteEmail, 
+          name: state.remoteName,
+          socketId: remoteSocketIdRef.current 
+        });
       }, 1000);
       return () => clearTimeout(retry);
     }
@@ -270,6 +331,7 @@ const retryConnection = useCallback(() => {
   useEffect(() => {
     if (state.remoteVideoReady && !state.isCallActive) {
       dispatch({ type: "START_CALL" });
+      console.log("⏱️ Call timer started");
     }
   }, [state.remoteVideoReady, state.isCallActive]);
 
@@ -290,13 +352,16 @@ const retryConnection = useCallback(() => {
   //  -------------------Copy Meeting Link---------------------------------
   const copyMeetingLink = async () => {
     const link = `${window.location.origin}/room/${roomId}`;
-
-    // Best formatted 4-line message
-    const message = `📹 Join my video meeting on MeetNow\n\n🔑 Room ID: ${roomId}\n🔗 Link: ${link}\n⚡ Works locally on port 5001`;
+    
+    // Updated message for production
+    const message = `📹 Join my video meeting on MeetNow\n\n🔑 Room ID: ${roomId}\n🔗 Link: ${link}\n🌐 Live on: ${window.location.origin}`;
 
     try {
       await navigator.clipboard.writeText(message);
-      toast.success("Meeting link copied!", { autoClose: 500 });
+      toast.success("Meeting link copied!", { 
+        icon: "🔗",
+        autoClose: 500 
+      });
     } catch {
       const textArea = document.createElement("textarea");
       textArea.value = message;
@@ -304,7 +369,10 @@ const retryConnection = useCallback(() => {
       textArea.select();
       document.execCommand("copy");
       document.body.removeChild(textArea);
-      toast.success("Meeting link copied!", { autoClose: 500 });
+      toast.success("Meeting link copied!", { 
+        icon: "🔗",
+        autoClose: 500 
+      });
     }
   };
 
@@ -326,12 +394,16 @@ const retryConnection = useCallback(() => {
         },
       });
     } else {
-      toast.success("Left the room", { autoClose: 500 });
+      toast.success("Left the room", { 
+        icon: "👋",
+        autoClose: 500 
+      });
     }
 
     // Stop all local tracks
     if (state.myStream) {
       state.myStream.getTracks().forEach((track) => track.stop());
+      console.log("🛑 Local media tracks stopped");
     }
 
     // Reset remote video
@@ -350,6 +422,7 @@ const retryConnection = useCallback(() => {
     // Reset peer connection
     if (peer) {
       peer.close();
+      console.log("🛑 Peer connection closed");
     }
 
     // Reset call timer
@@ -358,6 +431,7 @@ const retryConnection = useCallback(() => {
     // Notify server you left
     if (socket && roomId) {
       socket.emit("leave-room", { roomId });
+      console.log("📤 Leave room notification sent");
     }
 
     // Redirect after a short delay to allow toast to show
@@ -370,10 +444,19 @@ const retryConnection = useCallback(() => {
   useEffect(() => {
     if (!socket) return;
 
-    socket.on("joined-room", () => dispatch({ type: "SET_HAS_JOINED_ROOM", payload: true }));
+    console.log("🔌 Socket connected, setting up listeners...");
+
+    socket.on("joined-room", () => {
+      dispatch({ type: "SET_HAS_JOINED_ROOM", payload: true });
+      console.log("✅ Joined room successfully");
+    });
+
     socket.on("user-joined", handleNewUserJoined);
+    
     socket.on("incoming-call", handleIncomingCall);
+    
     socket.on("call-accepted", handleCallAccepted);
+    
     socket.on("chat-message", (data) => {
       // Add to chat
       dispatch({ type: "ADD_MESSAGE", payload: data });
@@ -398,7 +481,8 @@ const retryConnection = useCallback(() => {
     // user-left
     socket.on("user-left", ({ socketId }) => {
       pendingIncomingCall.current = null;
-      console.log("User left:", socketId);
+      remoteSocketIdRef.current = null;
+      console.log("🚪 User left:", socketId);
 
       // Stop and reset remote video
       if (remoteVideoRef.current && remoteVideoRef.current.srcObject) {
@@ -438,13 +522,21 @@ const retryConnection = useCallback(() => {
       dispatch({ type: "END_CALL" });
     });
 
+    // Socket error handling
+    socket.on("connect_error", (error) => {
+      console.error("❌ Socket connection error:", error);
+      toast.error("Connection error. Please refresh.");
+    });
+
     return () => {
+      console.log("🧹 Cleaning up socket listeners...");
       socket.off("joined-room");
       socket.off("user-joined", handleNewUserJoined);
       socket.off("incoming-call", handleIncomingCall);
       socket.off("call-accepted", handleCallAccepted);
       socket.off("chat-message");
       socket.off("user-left");
+      socket.off("connect_error");
     };
   }, [socket, handleNewUserJoined, handleIncomingCall, handleCallAccepted, state.isCallActive]);
 
@@ -466,6 +558,10 @@ const retryConnection = useCallback(() => {
     socket.emit("camera-toggle", {
       cameraOn: newCameraState,
       roomId,
+    });
+
+    toast(newCameraState ? "Camera ON" : "Camera OFF", {
+      icon: newCameraState ? "📹" : "📵",
     });
   };
 
@@ -489,6 +585,10 @@ const retryConnection = useCallback(() => {
     if (!state.myStream) return;
     state.myStream.getAudioTracks().forEach((t) => (t.enabled = !t.enabled));
     dispatch({ type: "TOGGLE_MIC" });
+    
+    toast(state.micOn ? "Mic OFF" : "Mic ON", {
+      icon: state.micOn ? "🔇" : "🎤",
+    });
   };
 
   // ---------------- toggleHandFree -----------------------
@@ -502,10 +602,12 @@ const retryConnection = useCallback(() => {
       await remoteVideoRef.current.setSinkId(state.handfreeDeviceId);
       micTracks.forEach((t) => (t.enabled = false));
       dispatch({ type: "TOGGLE_HANDFREE" });
+      toast("Speaker Mode ON", { icon: "🔊" });
     } else {
       await remoteVideoRef.current.setSinkId("");
       micTracks.forEach((t) => (t.enabled = true));
       dispatch({ type: "TOGGLE_HANDFREE" });
+      toast("Speaker Mode OFF", { icon: "🎧" });
     }
   };
 
@@ -527,6 +629,8 @@ const retryConnection = useCallback(() => {
     if (!state.isCallActive) {
       dispatch({ type: "START_CALL" });
     }
+    
+    console.log("✅ Remote video ready, call started");
   };
 
   // ------------------ Chat ------------------
@@ -557,7 +661,6 @@ const retryConnection = useCallback(() => {
 
     const handleChatMessage = (data) => {
       // If this is first message from remote user, store their name
-
       if (data.from !== socket.id && !state.remoteName && data.senderName) {
         dispatch({ type: "SET_REMOTE_NAME", payload: data.senderName });
       }
@@ -591,13 +694,17 @@ const retryConnection = useCallback(() => {
   useEffect(() => {
     navigator.mediaDevices.enumerateDevices().then((devices) => {
       const speakers = devices.filter((d) => d.kind === "audiooutput");
-      if (speakers.length > 0) dispatch({ type: "SET_HANDFREE_DEVICE", payload: speakers[0].deviceId });
+      if (speakers.length > 0) {
+        dispatch({ type: "SET_HANDFREE_DEVICE", payload: speakers[0].deviceId });
+        console.log("🔊 Available speakers:", speakers.map(s => s.label));
+      }
     });
   }, []);
 
   // This code waits until the microphone and camera are ready, then it automatically accepts the incoming call
   useEffect(() => {
     if (pendingIncomingCall.current && state.streamReady) {
+      console.log("🔄 Processing pending call now that stream is ready");
       handleIncomingCall({
         from: pendingIncomingCall.current.fromEmail,
         fromName: pendingIncomingCall.current.fromName,
@@ -613,8 +720,23 @@ const retryConnection = useCallback(() => {
     if (savedData) {
       const { name: savedName } = JSON.parse(savedData);
       dispatch({ type: "SET_MY_NAME", payload: savedName });
+      console.log("👤 User name loaded:", savedName);
     }
   }, []);
+
+  // Debug function (optional, can be removed)
+  const debugWebRTC = () => {
+    console.log("=== WEBRTC DEBUG INFO ===");
+    console.log("Remote Socket ID:", remoteSocketIdRef.current);
+    console.log("Peer Connection:", peer);
+    console.log("ICE Servers:", peer?.getConfiguration()?.iceServers);
+    console.log("Connection State:", peer?.connectionState);
+    console.log("ICE Connection State:", peer?.iceConnectionState);
+    console.log("Remote Stream:", remoteStreamRef.current);
+    console.log("My Stream:", state.myStream);
+    console.log("Socket Connected:", socket?.connected);
+    console.log("=========================");
+  };
 
   // UI/UX Design
   return (
@@ -827,20 +949,6 @@ const retryConnection = useCallback(() => {
         >
           <Share2 className="mr-2 w-5 h-5" />
         </div>
-        // Add this to your bottom control bar
-<button
-  onClick={() => {
-    console.log("🔍 Debug Info:");
-    console.log("- ICE State:", peer?.iceConnectionState);
-    console.log("- Connection State:", peer?.connectionState);
-    console.log("- Remote Stream:", !!remoteStreamRef.current);
-    console.log("- Socket Connected:", socket?.connected);
-    console.log("- Remote Socket ID:", remoteSocketIdRef.current);
-  }}
-  className="p-3 rounded-full bg-purple-600 hover:bg-purple-700 cursor-pointer"
->
-  🔍 Debug
-</button>
         <div
           onClick={leaveRoom}
           className={`p-3 rounded-full bg-[#ea002e] hover:bg-[#c7082e] gray-800 cursor-pointer`}
@@ -848,6 +956,16 @@ const retryConnection = useCallback(() => {
           <PhoneOff />
         </div>
       </div>
+
+      {/* Debug button (optional - remove in production) */}
+      {process.env.NODE_ENV === 'development' && (
+        <button
+          onClick={debugWebRTC}
+          className="fixed bottom-24 left-4 bg-gray-800 text-white p-2 rounded-full text-xs z-50"
+        >
+          🐛 Debug
+        </button>
+      )}
     </div>
   );
 };
