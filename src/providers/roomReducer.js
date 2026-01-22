@@ -24,11 +24,10 @@ export const initialState = {
   isCallActive: false,
   echoCancellationEnabled: true,
   noiseSuppressionEnabled: true,
-  audioDevices: [],
-  selectedAudioDevice: null,
   speakerMode: false,
   isMobileDevice: false,
-  connectionState: "disconnected"
+  connectionState: "disconnected",
+  mediaAccessGranted: false,
 };
 
 export function roomReducer(state, action) {
@@ -97,16 +96,14 @@ export function roomReducer(state, action) {
   return { ...state, echoCancellationEnabled: !state.echoCancellationEnabled };
 case "TOGGLE_NOISE_SUPPRESSION":
   return { ...state, noiseSuppressionEnabled: !state.noiseSuppressionEnabled };
-case "SET_AUDIO_DEVICES":
-  return { ...state, audioDevices: action.payload };
-case "SELECT_AUDIO_DEVICE":
-  return { ...state, selectedAudioDevice: action.payload };
 case "SET_SPEAKER_MODE":
   return { ...state, speakerMode: action.payload };
 case "SET_IS_MOBILE":
   return { ...state, isMobileDevice: action.payload };
 case "SET_CONNECTION_STATE":
   return { ...state, connectionState: action.payload };
+case "SET_MEDIA_ACCESS_GRANTED":
+  return { ...state, mediaAccessGranted: action.payload };
     default:
       return state;
   }
