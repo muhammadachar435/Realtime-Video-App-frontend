@@ -1,5 +1,5 @@
 // Import hooks
-import { useEffect, useCallback, useRef, useReducer, useMemo, useState } from "react";
+import { useEffect, useCallback, useRef, useReducer, useMemo } from "react";
 
 // Import router
 import { useParams } from "react-router-dom";
@@ -51,10 +51,6 @@ const RoomPage = () => {
   const remoteVideoRef = useRef();
   const remoteStreamRef = useRef(null);
   const remoteSocketIdRef = useRef(null);
-  const playAttemptRef = useRef(null); // Track play attempts
-
-  // State to track video play status
-  const [isRemoteVideoPlaying, setIsRemoteVideoPlaying] = useState(false);
 
   // totalUsers
   const totalUsers = useMemo(() => (state.remoteName ? 2 : 1), [state.remoteName]);
@@ -116,7 +112,7 @@ const RoomPage = () => {
 
     // Handle incoming ICE candidates
     const handleIncomingIceCandidate = ({ candidate, from }) => {
-      console.log("📥 Received ICE candidate from:", from);
+      console.log("📥 Received ICE candidate from:", from, candidate);
       if (candidate && peer.remoteDescription) {
         peer.addIceCandidate(new RTCIceCandidate(candidate)).catch(err => {
           console.error("❌ Error adding ICE candidate:", err);
@@ -127,7 +123,7 @@ const RoomPage = () => {
     // Handle local ICE candidate generation
     const handleLocalIceCandidate = (event) => {
       if (event.candidate && remoteSocketIdRef.current && socket) {
-        console.log("📤 Sending ICE candidate to:", remoteSocketIdRef.current);
+        console.log("📤 Sending ICE candidate to:", remoteSocketIdRef.current, event.candidate);
         socket.emit("ice-candidate", {
           to: remoteSocketIdRef.current,
           candidate: event.candidate,
@@ -142,6 +138,14 @@ const RoomPage = () => {
     // Handle ICE connection state changes
     peer.oniceconnectionstatechange = () => {
       console.log("❄️ ICE Connection State:", peer.iceConnectionState);
+      if (peer.iceConnectionState === "failed") {
+        console.log("🔄 ICE failed, trying to restart...");
+        try {
+          peer.restartIce();
+        } catch (err) {
+          console.error("❌ Failed to restart ICE:", err);
+        }
+      }
     };
 
     return () => {
@@ -153,46 +157,36 @@ const RoomPage = () => {
     };
   }, [socket, peer]);
 
-  // ------------------ Simple Remote Track Handler ------------------
+  // ------------------ Remote Track ------------------
   useEffect(() => {
+    let playTimeout;
+
+    // handleTrackEvent
     const handleTrackEvent = (event) => {
-      console.log("🎬 Track event received:", event.track.kind);
-      
       if (event.streams && event.streams[0]) {
         remoteStreamRef.current = event.streams[0];
-        console.log("📹 Remote stream received");
 
         if (remoteVideoRef.current) {
-          console.log("🔄 Attaching remote stream to video element");
-          
-          // Clear any previous play attempts
-          if (playAttemptRef.current) {
-            clearTimeout(playAttemptRef.current);
-          }
-          
-          // Set srcObject immediately
           remoteVideoRef.current.srcObject = remoteStreamRef.current;
-          
-          // Set volume to prevent echo
-          remoteVideoRef.current.volume = 0.5;
-          
-          // Don't try to play here - let the browser handle it
-          // The video will play automatically because of autoPlay attribute
+
+          // Small delay to avoid AbortError
+          clearTimeout(playTimeout);
+          playTimeout = setTimeout(() => {
+            // Only play if paused
+            if (remoteVideoRef.current.paused) {
+              remoteVideoRef.current.play().catch((err) => {
+                if (err.name !== "AbortError") console.error("❌ Error playing remote video:", err);
+              });
+            }
+          }, 50); // 50ms delay is enough
         }
       }
     };
 
-    if (peer) {
-      peer.addEventListener("track", handleTrackEvent);
-    }
-
+    peer.addEventListener("track", handleTrackEvent);
     return () => {
-      if (peer) {
-        peer.removeEventListener("track", handleTrackEvent);
-      }
-      if (playAttemptRef.current) {
-        clearTimeout(playAttemptRef.current);
-      }
+      peer.removeEventListener("track", handleTrackEvent);
+      clearTimeout(playTimeout);
     };
   }, [peer]);
 
@@ -281,32 +275,16 @@ const RoomPage = () => {
     [setRemoteAns],
   );
 
-  // ------------------ Optimized Local Media ------------------
+  // ------------------ Local Media ------------------
   const getUserMediaStream = useCallback(async () => {
     try {
       console.log("🎥 Requesting camera and microphone access...");
-      
-      // SIMPLIFIED constraints
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { 
-          width: { ideal: 640 }, 
-          height: { ideal: 480 },
-        },
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: false, // Disable auto gain to prevent echo
-        },
+        video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } },
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       });
 
       console.log("✅ Media devices accessed successfully");
-      
-      // Mute local video element to prevent echo
-      if (myVideoRef.current) {
-        myVideoRef.current.muted = true;
-        myVideoRef.current.volume = 0;
-      }
-      
       dispatch({ type: "SET_MY_STREAM", payload: stream });
       
       if (myVideoRef.current) {
@@ -371,7 +349,7 @@ const RoomPage = () => {
     }
   }, [remoteStreamRef.current]);
 
-  // -------------------Copy Meeting Link---------------------------------
+  //  -------------------Copy Meeting Link---------------------------------
   const copyMeetingLink = async () => {
     const link = `${window.location.origin}/room/${roomId}`;
     
@@ -643,16 +621,16 @@ const RoomPage = () => {
     dispatch({ type: "SET_IsSWAPPED", payload: !state.isSwapped });
   };
 
-  //  ----------------- Simple handleRemoteVideoReady ---------------------
+  //  ----------------- handleRemoteVideoRead ---------------------
   const handleRemoteVideoReady = () => {
-    console.log("✅ Video canPlay event fired");
     dispatch({ type: "SET_REMOTEVIDEOREADY", payload: true });
-    setIsRemoteVideoPlaying(true);
-    
+
     // Start call timer if not already started
     if (!state.isCallActive) {
       dispatch({ type: "START_CALL" });
     }
+    
+    console.log("✅ Remote video ready, call started");
   };
 
   // ------------------ Chat ------------------
@@ -815,15 +793,7 @@ const RoomPage = () => {
             ref={remoteVideoRef}
             autoPlay
             playsInline
-            muted={false}
-            volume={0.5}
             onCanPlay={handleRemoteVideoReady}
-            onPlaying={() => {
-              console.log("▶️ Remote video is playing");
-              setIsRemoteVideoPlaying(true);
-            }}
-            onPause={() => setIsRemoteVideoPlaying(false)}
-            onError={(e) => console.error("❌ Remote video error:", e.target.error)}
             className={`w-full h-full object-cover shadow-2xl rounded-md bg-[#0d1321] ${state.remoteCameraOn ? "block" : "hidden"} `}
           />
 
@@ -869,7 +839,7 @@ const RoomPage = () => {
             ref={myVideoRef}
             autoPlay
             playsInline
-            muted={true}
+            muted
             className={`w-full h-full rounded-md object-cover shadow-2xl bg-[#0d1321] ${state.cameraOn ? "block" : "hidden"} `}
           />
 
