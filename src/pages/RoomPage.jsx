@@ -29,6 +29,8 @@ import {
   X,
   Users,
   Ear,
+  VolumeX,
+  Volume1,
 } from "lucide-react";
 
 // import toast to display Notification
@@ -50,7 +52,10 @@ const RoomPage = () => {
     noiseSuppressionEnabled: true,
     audioDevices: [],
     selectedAudioDevice: null,
-    audioProcessingActive: true
+    audioProcessingActive: true,
+    speakerVolume: 0.5,
+    microphoneGain: 0.7,
+    isEchoTested: false
   }), []);
 
   // useReducer
@@ -66,6 +71,8 @@ const RoomPage = () => {
   const audioProcessorRef = useRef(null);
   const localAudioStreamRef = useRef(null);
   const analyserRef = useRef(null);
+  const echoTestInterval = useRef(null);
+  const audioTrackRef = useRef(null);
 
   // totalUsers
   const totalUsers = useMemo(() => (state.remoteName ? 2 : 1), [state.remoteName]);
@@ -94,6 +101,183 @@ const RoomPage = () => {
 
     return durationText.trim();
   };
+
+  // ------------------ Audio Quality Functions ------------------
+  const applyAudioConstraints = useCallback(async (track, options = {}) => {
+    try {
+      const constraints = {
+        echoCancellation: options.echoCancellation ?? true,
+        noiseSuppression: options.noiseSuppression ?? true,
+        autoGainControl: options.autoGainControl ?? false, // Manual control is better
+        channelCount: 1, // Mono reduces echo
+        sampleRate: 16000,
+        ...options
+      };
+      
+      await track.applyConstraints(constraints);
+      console.log("✅ Audio constraints applied:", constraints);
+      return true;
+    } catch (err) {
+      console.warn("Could not apply audio constraints:", err);
+      return false;
+    }
+  }, []);
+
+  const createAudioProcessor = useCallback(async (audioTrack) => {
+    try {
+      // Close previous audio context if exists
+      if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
+        audioContextRef.current.close();
+      }
+
+      const audioContext = new (window.AudioContext || window.webkitAudioContext)({
+        sampleRate: 16000,
+        latencyHint: 'interactive'
+      });
+      audioContextRef.current = audioContext;
+
+      const source = audioContext.createMediaStreamSource(new MediaStream([audioTrack]));
+      
+      // Create analyser for monitoring
+      const analyser = audioContext.createAnalyser();
+      analyser.fftSize = 256;
+      analyser.smoothingTimeConstant = 0.8;
+      analyserRef.current = analyser;
+      source.connect(analyser);
+      
+      // Advanced audio processing chain
+      const highPassFilter = audioContext.createBiquadFilter();
+      highPassFilter.type = 'highpass';
+      highPassFilter.frequency.value = 80; // Remove low frequency rumble
+      
+      const lowPassFilter = audioContext.createBiquadFilter();
+      lowPassFilter.type = 'lowpass';
+      lowPassFilter.frequency.value = 7000; // Remove high frequency noise
+      
+      const compressor = audioContext.createDynamicsCompressor();
+      compressor.threshold.value = -50;
+      compressor.knee.value = 40;
+      compressor.ratio.value = 10;
+      compressor.attack.value = 0.003;
+      compressor.release.value = 0.25;
+      
+      const noiseGate = audioContext.createScriptProcessor(2048, 1, 1);
+      noiseGate.onaudioprocess = (event) => {
+        const input = event.inputBuffer.getChannelData(0);
+        const output = event.outputBuffer.getChannelData(0);
+        
+        // Calculate RMS volume
+        let sum = 0;
+        for (let i = 0; i < input.length; i++) {
+          sum += input[i] * input[i];
+        }
+        const rms = Math.sqrt(sum / input.length);
+        
+        // Adaptive threshold based on state
+        const threshold = state.usingHandfree ? 0.02 : 0.01;
+        const closeThreshold = threshold * 0.4; // Hysteresis for smooth transitions
+        
+        if (rms < closeThreshold) {
+          // Complete silence for noise gate
+          for (let i = 0; i < output.length; i++) {
+            output[i] = 0;
+          }
+        } else if (rms > threshold) {
+          // Audio detected - apply processing
+          const gain = state.usingHandfree ? 0.6 : 0.8; // Lower gain in speaker mode
+          for (let i = 0; i < output.length; i++) {
+            output[i] = input[i] * gain;
+          }
+        } else {
+          // Fade zone - smooth transition
+          const fade = (rms - closeThreshold) / (threshold - closeThreshold);
+          for (let i = 0; i < output.length; i++) {
+            output[i] = input[i] * fade * 0.5;
+          }
+        }
+      };
+
+      const destination = audioContext.createMediaStreamDestination();
+      
+      // Connect processing chain
+      source.connect(highPassFilter);
+      highPassFilter.connect(lowPassFilter);
+      lowPassFilter.connect(compressor);
+      compressor.connect(noiseGate);
+      noiseGate.connect(destination);
+      
+      audioProcessorRef.current = noiseGate;
+      localAudioStreamRef.current = destination.stream;
+      
+      return destination.stream;
+      
+    } catch (error) {
+      console.warn("Audio processing setup failed:", error);
+      return null;
+    }
+  }, [state.usingHandfree]);
+
+  // ------------------ Echo Test Function ------------------
+  const runEchoTest = useCallback(async () => {
+    if (!state.myStream || state.isEchoTested) return;
+    
+    try {
+      console.log("🔊 Running echo cancellation test...");
+      
+      const audioTrack = state.myStream.getAudioTracks()[0];
+      if (!audioTrack) return;
+      
+      const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      const source = audioContext.createMediaStreamSource(new MediaStream([audioTrack]));
+      const analyser = audioContext.createAnalyser();
+      analyser.fftSize = 1024;
+      
+      source.connect(analyser);
+      
+      // Play test tone through speakers
+      const oscillator = audioContext.createOscillator();
+      const gainNode = audioContext.createGain();
+      gainNode.gain.value = 0.1; // Low volume test
+      
+      oscillator.frequency.value = 1000;
+      oscillator.connect(gainNode);
+      gainNode.connect(audioContext.destination);
+      oscillator.start();
+      
+      // Measure after tone
+      setTimeout(() => {
+        const dataArray = new Uint8Array(analyser.frequencyBinCount);
+        analyser.getByteFrequencyData(dataArray);
+        
+        let echoLevel = 0;
+        for (let i = 0; i < dataArray.length; i++) {
+          if (dataArray[i] > 50) echoLevel++;
+        }
+        
+        console.log("🔊 Echo test result:", echoLevel);
+        
+        if (echoLevel > 10) {
+          console.warn("⚠️ Echo detected - adjusting settings");
+          
+          // Apply stronger echo cancellation
+          audioTrack.applyConstraints({
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: false,
+            channelCount: 1
+          }).catch(console.warn);
+        }
+        
+        oscillator.stop();
+        audioContext.close();
+        dispatch({ type: "SET_ECHO_TESTED", payload: true });
+        
+      }, 1000);
+      
+    } catch (error) {
+      console.warn("Echo test failed:", error);
+    }
+  }, [state.myStream, state.isEchoTested]);
 
   // ------------------ Incoming Call ------------------
   const handleIncomingCall = useCallback(
@@ -180,12 +364,27 @@ const RoomPage = () => {
     [setRemoteAns],
   );
 
-  // ------------------ Local Media ------------------
+  // ------------------ Local Media Setup ------------------
   const getUserMediaStream = useCallback(async () => {
     try {
       console.log("🎥 Requesting camera and microphone access...");
       
-      // Enhanced audio constraints for echo cancellation
+      // Get available devices first
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const audioInputs = devices.filter(d => d.kind === 'audioinput');
+      
+      // Try to find a device with good echo cancellation
+      let selectedDevice = null;
+      const preferredDevices = ['Jabra', 'Logitech', 'Poly', 'Plantronics', 'Sennheiser'];
+      
+      for (const device of audioInputs) {
+        if (preferredDevices.some(name => device.label.includes(name))) {
+          selectedDevice = device.deviceId;
+          break;
+        }
+      }
+      
+      // Enhanced audio constraints
       const constraints = {
         video: { 
           width: { ideal: 1280 }, 
@@ -193,184 +392,116 @@ const RoomPage = () => {
           frameRate: { ideal: 30 },
           facingMode: "user"
         },
-        audio: { 
-          // Advanced echo cancellation settings
-          echoCancellation: { ideal: true },
-          noiseSuppression: { ideal: true },
-          autoGainControl: { ideal: true },
-          // Specific codec preferences
-          channelCount: 1, // Mono - reduces echo
-          sampleRate: 16000, // Optimized for voice
+        audio: {
+          // Core constraints
+          echoCancellation: { ideal: true, exact: true },
+          noiseSuppression: { ideal: true, exact: true },
+          autoGainControl: { ideal: false }, // We'll control manually
+          
+          // Audio quality
+          channelCount: 1,
+          sampleRate: 16000,
+          sampleSize: 16,
+          latency: 0.01,
+          
           // Device selection
-          deviceId: undefined, // Let browser choose best
-          // Advanced features
-          googEchoCancellation: true,
-          googNoiseSuppression: true,
-          googAutoGainControl: true,
-          googHighpassFilter: true
+          ...(selectedDevice && { deviceId: { exact: selectedDevice } }),
+          
+          // Browser-specific optimizations
+          ...(navigator.userAgent.includes('Chrome') && {
+            googEchoCancellation: true,
+            googNoiseSuppression: true,
+            googAutoGainControl: false,
+            googHighpassFilter: true,
+            googAudioMirroring: false, // CRITICAL: Prevent audio mirroring
+          }),
+          
+          ...(navigator.userAgent.includes('Firefox') && {
+            mozNoiseSuppression: true,
+            mozEchoCancellation: true,
+            mozAutoGainControl: false
+          })
         }
       };
 
-      const stream = await navigator.mediaDevices.getUserMedia(constraints);
-
-      // Verify audio quality
-      const audioTracks = stream.getAudioTracks();
-      audioTracks.forEach(track => {
-        const settings = track.getSettings();
-        console.log("🔊 Audio settings after getUserMedia:", settings);
-        
-        // Apply additional constraints if needed
-        track.applyConstraints({
+      let stream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia(constraints);
+      } catch (err) {
+        console.log("First attempt failed, trying fallback...");
+        // Fallback to simpler constraints
+        constraints.audio = {
           echoCancellation: true,
           noiseSuppression: true,
-          autoGainControl: true,
+          autoGainControl: false,
           channelCount: 1
-        }).catch(err => {
-          console.warn("Could not apply audio constraints:", err);
-        });
+        };
+        stream = await navigator.mediaDevices.getUserMedia(constraints);
+      }
+
+      // Store the original audio track reference
+      const audioTrack = stream.getAudioTracks()[0];
+      audioTrackRef.current = audioTrack;
+      
+      // Verify settings
+      const settings = audioTrack.getSettings();
+      console.log("🔊 Audio Settings Applied:", {
+        echoCancellation: settings.echoCancellation,
+        noiseSuppression: settings.noiseSuppression,
+        channelCount: settings.channelCount,
+        deviceId: settings.deviceId?.substring(0, 20)
       });
 
-      console.log("✅ Media devices accessed successfully");
-      dispatch({ type: "SET_MY_STREAM", payload: stream });
+      // Apply audio processing
+      const processedAudioStream = await createAudioProcessor(audioTrack);
+      let finalStream = stream;
+      
+      if (processedAudioStream) {
+        finalStream = new MediaStream([
+          ...stream.getVideoTracks(),
+          ...processedAudioStream.getAudioTracks()
+        ]);
+      }
+
+      dispatch({ type: "SET_MY_STREAM", payload: finalStream });
       
       if (myVideoRef.current) {
-        myVideoRef.current.srcObject = stream;
+        myVideoRef.current.srcObject = finalStream;
         console.log("✅ Local video stream attached");
       }
       
-      await sendStream(stream);
+      // Send stream to peer
+      await sendStream(finalStream);
       dispatch({ type: "SET_STREAM_READY", payload: true });
-      dispatch({ type: "SET_AUDIO_PROCESSING_ACTIVE", payload: true });
       console.log("✅ Stream ready for WebRTC");
 
-      // Handle pending incoming call automatically
+      // Run echo test
+      setTimeout(() => {
+        runEchoTest();
+      }, 1000);
+
+      // Handle pending incoming call
       if (pendingIncomingCall.current) {
         console.log("🔄 Processing pending incoming call...");
         handleIncomingCall(pendingIncomingCall.current);
         pendingIncomingCall.current = null;
       }
+      
     } catch (err) {
       console.error("❌ Error accessing media devices:", err);
-      
-      // Fallback to simpler constraints
-      if (err.name === 'OverconstrainedError' || err.name === 'ConstraintNotSatisfiedError') {
-        try {
-          console.log("🔄 Trying fallback constraints...");
-          const fallbackStream = await navigator.mediaDevices.getUserMedia({
-            video: true,
-            audio: {
-              echoCancellation: true,
-              noiseSuppression: true,
-              autoGainControl: true
-            }
-          });
-          
-          dispatch({ type: "SET_MY_STREAM", payload: fallbackStream });
-          await sendStream(fallbackStream);
-          dispatch({ type: "SET_STREAM_READY", payload: true });
-          dispatch({ type: "SET_AUDIO_PROCESSING_ACTIVE", payload: true });
-        } catch (fallbackErr) {
-          console.error("Fallback also failed:", fallbackErr);
-          toast.error("Please allow camera and microphone access");
-        }
-      } else {
-        toast.error("Failed to access camera/microphone");
-      }
+      toast.error("Please allow camera and microphone access");
     }
-  }, [sendStream, handleIncomingCall]);
+  }, [sendStream, handleIncomingCall, createAudioProcessor, runEchoTest]);
 
-  // ------------------ Audio Processing ------------------
+  // ------------------ Audio Processing Setup ------------------
   useEffect(() => {
     if (!state.myStream || !state.audioProcessingActive) return;
 
-    // Setup audio context for local audio processing
     const setupAudioProcessing = async () => {
-      try {
-        // Cleanup previous audio context if exists
-        if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
-          audioContextRef.current.close();
-        }
-
-        const audioContext = new (window.AudioContext || window.webkitAudioContext)({
-          sampleRate: 16000,
-          latencyHint: 'interactive'
-        });
-        audioContextRef.current = audioContext;
-
-        // Get audio track
-        const audioTrack = state.myStream.getAudioTracks()[0];
-        if (!audioTrack) return;
-
-        const source = audioContext.createMediaStreamSource(new MediaStream([audioTrack]));
-        
-        // Create analyser for debugging
-        const analyser = audioContext.createAnalyser();
-        analyser.fftSize = 256;
-        analyserRef.current = analyser;
-        source.connect(analyser);
-        
-        // Create noise suppressor node
-        const noiseSuppressor = audioContext.createScriptProcessor(4096, 1, 1);
-        
-        noiseSuppressor.onaudioprocess = function(event) {
-          const input = event.inputBuffer.getChannelData(0);
-          const output = event.outputBuffer.getChannelData(0);
-          
-          // Advanced noise gate implementation
-          let sum = 0;
-          for (let i = 0; i < input.length; i++) {
-            sum += input[i] * input[i];
-          }
-          
-          const rms = Math.sqrt(sum / input.length);
-          const threshold = 0.015; // Optimized threshold
-          
-          if (rms < threshold) {
-            // Silence the output (noise gate)
-            for (let i = 0; i < output.length; i++) {
-              output[i] = 0;
-            }
-          } else {
-            // Apply dynamic compression and slight high-pass filter
-            const compressionFactor = 0.85; // Reduce volume to prevent clipping
-            const highPassFactor = 0.1; // Reduce low frequencies (rumble)
-            
-            for (let i = 0; i < output.length; i++) {
-              // Simple high-pass filter
-              const filtered = i > 0 ? (input[i] - input[i-1] * highPassFactor) : input[i];
-              // Compression
-              output[i] = filtered * compressionFactor;
-            }
-          }
-        };
-
-        const destination = audioContext.createMediaStreamDestination();
-        
-        source.connect(noiseSuppressor);
-        noiseSuppressor.connect(destination);
-        
-        audioProcessorRef.current = noiseSuppressor;
-        localAudioStreamRef.current = destination.stream;
-        
-        // Update peer with processed audio if stream is ready
-        if (peer && sendStream && state.streamReady) {
-          try {
-            // Combine processed audio with video
-            const processedStream = new MediaStream([
-              ...state.myStream.getVideoTracks(),
-              ...destination.stream.getAudioTracks()
-            ]);
-            
-            await sendStream(processedStream);
-            console.log("✅ Audio processing applied and stream updated");
-          } catch (err) {
-            console.warn("Could not update stream with processed audio:", err);
-          }
-        }
-        
-      } catch (error) {
-        console.warn("Audio processing setup failed:", error);
-      }
+      const audioTrack = state.myStream.getAudioTracks()[0];
+      if (!audioTrack) return;
+      
+      await createAudioProcessor(audioTrack);
     };
 
     setupAudioProcessing();
@@ -383,45 +514,72 @@ const RoomPage = () => {
       if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
         audioContextRef.current.close();
       }
+      if (echoTestInterval.current) {
+        clearInterval(echoTestInterval.current);
+      }
     };
-  }, [state.myStream, state.audioProcessingActive, peer, sendStream, state.streamReady]);
+  }, [state.myStream, state.audioProcessingActive, createAudioProcessor]);
+
+  // ------------------ Continuous Echo Monitoring ------------------
+  useEffect(() => {
+    if (!state.myStream || !state.micOn) return;
+    
+    const monitorAudioQuality = () => {
+      if (!analyserRef.current) return;
+      
+      const analyser = analyserRef.current;
+      const dataArray = new Uint8Array(analyser.frequencyBinCount);
+      analyser.getByteFrequencyData(dataArray);
+      
+      // Calculate audio metrics
+      let sum = 0;
+      let peak = 0;
+      for (let i = 0; i < dataArray.length; i++) {
+        sum += dataArray[i];
+        if (dataArray[i] > peak) peak = dataArray[i];
+      }
+      const avg = sum / dataArray.length;
+      
+      // Detect potential echo (delayed frequency patterns)
+      let echoPatterns = 0;
+      for (let i = 10; i < dataArray.length; i += 10) {
+        if (dataArray[i] > 80 && dataArray[i-10] > 80) {
+          echoPatterns++;
+        }
+      }
+      
+      // Auto-adjust if echo is detected
+      if (echoPatterns > 3 && audioTrackRef.current) {
+        console.log("🔄 Auto-adjusting for echo reduction");
+        
+        const newGain = Math.max(0.3, state.microphoneGain - 0.1);
+        dispatch({ type: "SET_MICROPHONE_GAIN", payload: newGain });
+        
+        audioTrackRef.current.applyConstraints({
+          echoCancellation: true,
+          gain: newGain
+        }).catch(console.warn);
+      }
+    };
+    
+    echoTestInterval.current = setInterval(monitorAudioQuality, 3000);
+    
+    return () => {
+      if (echoTestInterval.current) {
+        clearInterval(echoTestInterval.current);
+      }
+    };
+  }, [state.myStream, state.micOn, state.microphoneGain]);
 
   // Initial call to getUserMediaStream
   useEffect(() => {
     getUserMediaStream();
   }, [getUserMediaStream]);
 
-  // ------------------ Debug WebRTC Connection ------------------
-  useEffect(() => {
-    if (!peer) return;
-
-    const logConnectionState = () => {
-      console.log("🔍 WebRTC Debug Info:", {
-        connectionState: peer.connectionState,
-        iceConnectionState: peer.iceConnectionState,
-        iceGatheringState: peer.iceGatheringState,
-        signalingState: peer.signalingState,
-      });
-    };
-
-    peer.addEventListener('connectionstatechange', logConnectionState);
-    peer.addEventListener('iceconnectionstatechange', logConnectionState);
-    peer.addEventListener('icegatheringstatechange', logConnectionState);
-    peer.addEventListener('signalingstatechange', logConnectionState);
-
-    return () => {
-      peer.removeEventListener('connectionstatechange', logConnectionState);
-      peer.removeEventListener('iceconnectionstatechange', logConnectionState);
-      peer.removeEventListener('icegatheringstatechange', logConnectionState);
-      peer.removeEventListener('signalingstatechange', logConnectionState);
-    };
-  }, [peer]);
-
   // ------------------ ICE Candidates ------------------
   useEffect(() => {
     if (!socket || !peer) return;
 
-    // Handle incoming ICE candidates
     const handleIncomingIceCandidate = ({ candidate, from }) => {
       console.log("📥 Received ICE candidate from:", from, candidate);
       if (candidate && peer.remoteDescription) {
@@ -431,7 +589,6 @@ const RoomPage = () => {
       }
     };
 
-    // Handle local ICE candidate generation
     const handleLocalIceCandidate = (event) => {
       if (event.candidate && remoteSocketIdRef.current && socket) {
         console.log("📤 Sending ICE candidate to:", remoteSocketIdRef.current, event.candidate);
@@ -442,11 +599,9 @@ const RoomPage = () => {
       }
     };
 
-    // Set up event listeners
     socket.on("ice-candidate", handleIncomingIceCandidate);
     peer.onicecandidate = handleLocalIceCandidate;
 
-    // Handle ICE connection state changes
     peer.oniceconnectionstatechange = () => {
       console.log("❄️ ICE Connection State:", peer.iceConnectionState);
       if (peer.iceConnectionState === "failed") {
@@ -472,7 +627,6 @@ const RoomPage = () => {
   useEffect(() => {
     let playTimeout;
 
-    // handleTrackEvent
     const handleTrackEvent = (event) => {
       if (event.streams && event.streams[0]) {
         remoteStreamRef.current = event.streams[0];
@@ -480,16 +634,14 @@ const RoomPage = () => {
         if (remoteVideoRef.current) {
           remoteVideoRef.current.srcObject = remoteStreamRef.current;
 
-          // Small delay to avoid AbortError
           clearTimeout(playTimeout);
           playTimeout = setTimeout(() => {
-            // Only play if paused
             if (remoteVideoRef.current.paused) {
               remoteVideoRef.current.play().catch((err) => {
                 if (err.name !== "AbortError") console.error("❌ Error playing remote video:", err);
               });
             }
-          }, 50); // 50ms delay is enough
+          }, 50);
         }
       }
     };
@@ -501,7 +653,7 @@ const RoomPage = () => {
     };
   }, [peer]);
 
-  // If remote video is not received yet, retry connecting after 1 second
+  // Retry connection if remote video not received
   useEffect(() => {
     if (!remoteStreamRef.current && state.remoteEmail && state.streamReady) {
       console.log("🔄 Retrying connection to remote user...");
@@ -516,7 +668,7 @@ const RoomPage = () => {
     }
   }, [state.remoteEmail, state.remoteName, state.streamReady, handleNewUserJoined]);
 
-  // Start call timer when remote video becomes ready
+  // Start call timer
   useEffect(() => {
     if (state.remoteVideoReady && !state.isCallActive) {
       dispatch({ type: "START_CALL" });
@@ -524,26 +676,23 @@ const RoomPage = () => {
     }
   }, [state.remoteVideoReady, state.isCallActive]);
 
-  // Attach my own camera stream to my video element
+  // Attach streams to video elements
   useEffect(() => {
     if (myVideoRef.current && state.myStream) {
       myVideoRef.current.srcObject = state.myStream;
     }
   }, [state.myStream]);
 
-  // Attach remote user's video stream to remote video element
   useEffect(() => {
     if (remoteVideoRef.current && remoteStreamRef.current) {
       remoteVideoRef.current.srcObject = remoteStreamRef.current;
     }
   }, [remoteStreamRef.current]);
 
-  //  -------------------Copy Meeting Link---------------------------------
+  // ------------------ Meeting Link ------------------
   const copyMeetingLink = async () => {
     const link = `${window.location.origin}/room/${roomId}`;
-    
-    // Updated message for production
-    const message = `📹 Join my video meeting on MeetNow\n\n🔑 Room ID: ${roomId}\n🔗 Link: ${link}\n🌐 Live on: ${window.location.origin}`;
+    const message = `📹 Join my video meeting on MeetNow\n\n🔑 Room ID: ${roomId}\n🔗 Link: ${link}`;
 
     try {
       await navigator.clipboard.writeText(message);
@@ -567,10 +716,8 @@ const RoomPage = () => {
 
   // ------------------ Leave Room ------------------
   const leaveRoom = () => {
-    // Calculate total call duration
     const callDuration = getCallDurationText();
 
-    // Show toast with call duration
     if (state.isCallActive) {
       toast.success(`Call ended. Duration: ${callDuration}`, {
         duration: 5000,
@@ -589,13 +736,13 @@ const RoomPage = () => {
       });
     }
 
-    // Stop all local tracks
+    // Stop all tracks
     if (state.myStream) {
       state.myStream.getTracks().forEach((track) => track.stop());
       console.log("🛑 Local media tracks stopped");
     }
 
-    // Cleanup audio processing
+    // Cleanup audio
     if (audioProcessorRef.current) {
       audioProcessorRef.current.disconnect();
     }
@@ -603,35 +750,31 @@ const RoomPage = () => {
       audioContextRef.current.close();
     }
 
-    // Reset remote video
-    if (remoteVideoRef.current) {
-      if (remoteVideoRef.current.srcObject) {
-        remoteVideoRef.current.srcObject.getTracks().forEach((t) => t.stop());
-      }
+    // Reset videos
+    if (remoteVideoRef.current && remoteVideoRef.current.srcObject) {
+      remoteVideoRef.current.srcObject.getTracks().forEach((t) => t.stop());
       remoteVideoRef.current.srcObject = null;
     }
-
-    // Reset local video
     if (myVideoRef.current) {
       myVideoRef.current.srcObject = null;
     }
 
-    // Reset peer connection
+    // Close peer
     if (peer) {
       peer.close();
       console.log("🛑 Peer connection closed");
     }
 
-    // Reset call timer
+    // Reset state
     dispatch({ type: "END_CALL" });
 
-    // Notify server you left
+    // Notify server
     if (socket && roomId) {
       socket.emit("leave-room", { roomId });
       console.log("📤 Leave room notification sent");
     }
 
-    // Redirect after a short delay to allow toast to show
+    // Redirect
     setTimeout(() => {
       window.location.href = "/";
     }, 1000);
@@ -649,18 +792,13 @@ const RoomPage = () => {
     });
 
     socket.on("user-joined", handleNewUserJoined);
-    
     socket.on("incoming-call", handleIncomingCall);
-    
     socket.on("call-accepted", handleCallAccepted);
     
     socket.on("chat-message", (data) => {
-      // Add to chat
       dispatch({ type: "ADD_MESSAGE", payload: data });
 
-      // Show toast for messages from others
       if (data.from !== socket.id) {
-        // Use data.senderName that comes from backend
         toast.custom(
           (t) => (
             <div className="bg-green-800 shadow-2xl text-white p-4 rounded-xl flex items-center gap-2 z-50">
@@ -675,22 +813,18 @@ const RoomPage = () => {
       }
     });
 
-    // user-left
     socket.on("user-left", ({ socketId }) => {
       pendingIncomingCall.current = null;
       remoteSocketIdRef.current = null;
       console.log("🚪 User left:", socketId);
 
-      // Stop and reset remote video
       if (remoteVideoRef.current && remoteVideoRef.current.srcObject) {
         remoteVideoRef.current.srcObject.getTracks().forEach((t) => t.stop());
         remoteVideoRef.current.srcObject = null;
       }
 
-      // Reset remote stream reference
       remoteStreamRef.current = null;
 
-      // Show toast for call duration when remote user leaves
       if (state.isCallActive) {
         const callDuration = getCallDurationText();
         toast.custom(
@@ -709,17 +843,13 @@ const RoomPage = () => {
         );
       }
 
-      // Reset remote-related state
       dispatch({ type: "SET_REMOTE_NAME", payload: null });
       dispatch({ type: "SET_REMOTE_EMAIL", payload: null });
       dispatch({ type: "SET_REMOTE_CAMERA", payload: false });
       dispatch({ type: "SET_REMOTEVIDEOREADY", payload: false });
-
-      // End the call
       dispatch({ type: "END_CALL" });
     });
 
-    // Socket error handling
     socket.on("connect_error", (error) => {
       console.error("❌ Socket connection error:", error);
       toast.error("Connection error. Please refresh.");
@@ -737,21 +867,17 @@ const RoomPage = () => {
     };
   }, [socket, handleNewUserJoined, handleIncomingCall, handleCallAccepted, state.isCallActive]);
 
-  // ------------------ Camera, Mic, Handfree ------------------
+  // ------------------ Media Controls ------------------
 
-  // ------------------ toggleCamera ------------------
+  // Toggle Camera
   const toggleCamera = () => {
     if (!state.myStream) return;
 
     const newCameraState = !state.cameraOn;
-
-    // enable / disable camera track
     state.myStream.getVideoTracks().forEach((track) => (track.enabled = newCameraState));
 
-    // update my own state
     dispatch({ type: "TOGGLE_CAMERA" });
 
-    // send ONLY to other user in room
     socket.emit("camera-toggle", {
       cameraOn: newCameraState,
       roomId,
@@ -762,8 +888,116 @@ const RoomPage = () => {
     });
   };
 
-  //   ----------------- ToggleCamera ---------------------
-  // This code listens for the other user's camera ON/OFF and updates the screen
+  // Toggle Mic
+  const toggleMic = async () => {
+    if (!state.myStream) return;
+    
+    const newMicState = !state.micOn;
+    const audioTracks = state.myStream.getAudioTracks();
+    
+    for (const track of audioTracks) {
+      track.enabled = newMicState;
+      
+      if (newMicState) {
+        await applyAudioConstraints(track, {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: false
+        });
+      }
+    }
+    
+    dispatch({ type: "TOGGLE_MIC" });
+    
+    toast(newMicState ? "Mic ON - Echo cancellation active" : "Mic OFF", {
+      icon: newMicState ? "🎤" : "🔇",
+      duration: 2000
+    });
+  };
+
+  // Toggle Handfree/Speaker Mode
+  const toggleHandfree = async () => {
+    if (!remoteVideoRef.current) return;
+    
+    const newHandfreeState = !state.usingHandfree;
+    
+    try {
+      if (newHandfreeState && state.handfreeDeviceId) {
+        // Switch to speaker mode
+        await remoteVideoRef.current.setSinkId(state.handfreeDeviceId);
+        
+        // Adjust audio settings for speaker mode
+        const audioTracks = state.myStream?.getAudioTracks();
+        if (audioTracks?.length > 0) {
+          await applyAudioConstraints(audioTracks[0], {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: false,
+            gain: 0.6 // Lower gain in speaker mode
+          });
+        }
+        
+        toast("Speaker Mode ON - Enhanced echo cancellation", { 
+          icon: "🔊",
+          duration: 3000 
+        });
+      } else {
+        // Switch to headphone/normal mode
+        await remoteVideoRef.current.setSinkId("");
+        
+        // Restore normal audio settings
+        const audioTracks = state.myStream?.getAudioTracks();
+        if (audioTracks?.length > 0) {
+          await applyAudioConstraints(audioTracks[0], {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: false,
+            gain: 0.8
+          });
+        }
+        
+        toast("Headphone Mode ON", { 
+          icon: "🎧",
+          duration: 2000 
+        });
+      }
+      
+      dispatch({ type: "TOGGLE_HANDFREE" });
+      
+    } catch (err) {
+      console.error("Failed to toggle handfree mode:", err);
+      toast.error("Failed to switch audio mode");
+    }
+  };
+
+  // Adjust Speaker Volume
+  const adjustSpeakerVolume = (volume) => {
+    if (remoteVideoRef.current) {
+      remoteVideoRef.current.volume = volume;
+      dispatch({ type: "SET_SPEAKER_VOLUME", payload: volume });
+    }
+  };
+
+  // Adjust Microphone Gain
+  const adjustMicrophoneGain = async (gain) => {
+    if (!state.myStream) return;
+    
+    const audioTracks = state.myStream.getAudioTracks();
+    if (audioTracks.length > 0) {
+      try {
+        await audioTracks[0].applyConstraints({
+          echoCancellation: true,
+          gain: gain
+        });
+        dispatch({ type: "SET_MICROPHONE_GAIN", payload: gain });
+        toast.success(`Microphone gain set to ${Math.round(gain * 100)}%`);
+      } catch (err) {
+        console.warn("Could not adjust microphone gain:", err);
+      }
+    }
+  };
+
+  // Remote Camera Toggle Listener
   useEffect(() => {
     if (!socket) return;
 
@@ -777,88 +1011,8 @@ const RoomPage = () => {
     return () => socket.off("camera-toggle", handleCameraToggle);
   }, [socket]);
 
-  // --------------- toggleMic ----------------------
-  const toggleMic = () => {
-    if (!state.myStream) return;
-    
-    const newMicState = !state.micOn;
-    state.myStream.getAudioTracks().forEach((t) => {
-      t.enabled = newMicState;
-      // Apply echo cancellation when enabling mic
-      if (newMicState) {
-        t.applyConstraints({
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true
-        }).catch(err => console.warn("Could not apply audio constraints:", err));
-      }
-    });
-    
-    dispatch({ type: "TOGGLE_MIC" });
-    
-    toast(newMicState ? "Mic ON" : "Mic OFF", {
-      icon: newMicState ? "🎤" : "🔇",
-    });
-  };
-
-  // ---------------- toggleHandFree -----------------------
-  const toggleHandfree = async () => {
-    if (!remoteVideoRef.current || !state.myStream) return;
-
-    const micTracks = state.myStream.getAudioTracks();
-    
-    if (!state.usingHandfree && state.handfreeDeviceId) {
-      // Switch to speaker mode
-      try {
-        await remoteVideoRef.current.setSinkId(state.handfreeDeviceId);
-        
-        // Mute microphone to prevent echo
-        micTracks.forEach((t) => {
-          t.enabled = false;
-          // Apply additional echo cancellation in speaker mode
-          t.applyConstraints({
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true
-          });
-        });
-        
-        dispatch({ type: "TOGGLE_HANDFREE" });
-        toast("Speaker Mode ON - Microphone muted to prevent echo", { 
-          icon: "🔊",
-          duration: 3000 
-        });
-      } catch (err) {
-        console.error("Failed to switch to speaker:", err);
-        toast.error("Failed to switch to speaker mode");
-      }
-    } else {
-      // Switch back to normal mode
-      try {
-        await remoteVideoRef.current.setSinkId("");
-        
-        // Unmute microphone
-        micTracks.forEach((t) => {
-          t.enabled = true;
-          // Apply optimal constraints for headphone mode
-          t.applyConstraints({
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true
-          });
-        });
-        
-        dispatch({ type: "TOGGLE_HANDFREE" });
-        toast("Headphone Mode ON", { icon: "🎧" });
-      } catch (err) {
-        console.error("Failed to switch to headphones:", err);
-      }
-    }
-  };
-
   // ------------------ Enhanced Audio Controls ------------------
 
-  // Add hardware echo cancellation toggle
   const toggleEchoCancellation = async () => {
     if (!state.myStream) return;
     
@@ -870,7 +1024,7 @@ const RoomPage = () => {
         await track.applyConstraints({
           echoCancellation: newEchoState,
           noiseSuppression: true,
-          autoGainControl: true
+          autoGainControl: false
         });
       } catch (err) {
         console.warn("Could not toggle echo cancellation:", err);
@@ -883,7 +1037,6 @@ const RoomPage = () => {
     });
   };
 
-  // Toggle noise suppression
   const toggleNoiseSuppression = async () => {
     if (!state.myStream) return;
     
@@ -895,7 +1048,7 @@ const RoomPage = () => {
         await track.applyConstraints({
           echoCancellation: true,
           noiseSuppression: newNoiseState,
-          autoGainControl: true
+          autoGainControl: false
         });
       } catch (err) {
         console.warn("Could not toggle noise suppression:", err);
@@ -908,7 +1061,6 @@ const RoomPage = () => {
     });
   };
 
-  // Toggle audio processing
   const toggleAudioProcessing = () => {
     const newAudioProcessingState = !state.audioProcessingActive;
     dispatch({ type: "SET_AUDIO_PROCESSING_ACTIVE", payload: newAudioProcessingState });
@@ -918,7 +1070,7 @@ const RoomPage = () => {
     });
   };
 
-  // ------------------ Detect Audio Devices ------------------
+  // ------------------ Audio Devices ------------------
   useEffect(() => {
     const detectAudioDevices = async () => {
       try {
@@ -928,7 +1080,6 @@ const RoomPage = () => {
         
         dispatch({ type: "SET_AUDIO_DEVICES", payload: audioInputDevices });
         
-        // Store first speaker for handfree mode
         if (audioOutputDevices.length > 0) {
           dispatch({ type: "SET_HANDFREE_DEVICE", payload: audioOutputDevices[0].deviceId });
           console.log("🔊 Available speakers:", audioOutputDevices.map(s => s.label));
@@ -941,10 +1092,8 @@ const RoomPage = () => {
     detectAudioDevices();
   }, []);
 
-  // ------------------ Select Audio Device ------------------
   const selectAudioDevice = async (deviceId) => {
     try {
-      // Get current video constraints
       const videoTrack = state.myStream?.getVideoTracks()[0];
       const videoConstraints = videoTrack ? videoTrack.getSettings() : true;
       
@@ -953,7 +1102,7 @@ const RoomPage = () => {
           deviceId: { exact: deviceId },
           echoCancellation: true,
           noiseSuppression: true,
-          autoGainControl: true,
+          autoGainControl: false,
           channelCount: 1
         },
         video: videoConstraints
@@ -962,7 +1111,6 @@ const RoomPage = () => {
       dispatch({ type: "SET_MY_STREAM", payload: stream });
       dispatch({ type: "SELECT_AUDIO_DEVICE", payload: deviceId });
       
-      // Update peer connection with new stream
       if (sendStream) {
         await sendStream(stream);
       }
@@ -974,21 +1122,18 @@ const RoomPage = () => {
     }
   };
 
-  //  ----------------- Chat Handle ---------------------
+  // ------------------ Chat ------------------
   const handleChat = () => {
     dispatch({ type: "SET_CHATCLOSE", payload: !state.chatClose });
   };
 
-  //  ----------------- handle Swipped---------------------
   const handleSwipped = () => {
     dispatch({ type: "SET_IsSWAPPED", payload: !state.isSwapped });
   };
 
-  //  ----------------- handleRemoteVideoRead ---------------------
   const handleRemoteVideoReady = () => {
     dispatch({ type: "SET_REMOTEVIDEOREADY", payload: true });
 
-    // Start call timer if not already started
     if (!state.isCallActive) {
       dispatch({ type: "START_CALL" });
     }
@@ -996,14 +1141,11 @@ const RoomPage = () => {
     console.log("✅ Remote video ready, call started");
   };
 
-  // ------------------ Chat ------------------
   const sendMessage = () => {
     if (!state.messageText.trim()) return;
 
-    // Send message to other users in the room via socket
     socket.emit("chat-message", { roomId, from: socket.id, text: state.messageText });
 
-    // Add message to local chat list (sender side)
     dispatch({
       type: "ADD_MESSAGE",
       payload: {
@@ -1013,23 +1155,19 @@ const RoomPage = () => {
       },
     });
 
-    // Clear input box after sending
     dispatch({ type: "SET_MESSAGE_TEXT", payload: "" });
   };
 
-  // ------------------ Chat Message Listener ------------------
+  // Chat Message Listener
   useEffect(() => {
     if (!socket) return;
 
     const handleChatMessage = (data) => {
-      // If this is first message from remote user, store their name
       if (data.from !== socket.id && !state.remoteName && data.senderName) {
         dispatch({ type: "SET_REMOTE_NAME", payload: data.senderName });
       }
-      // Add to messages
       dispatch({ type: "ADD_MESSAGE", payload: data });
 
-      // Show toast if from other user
       if (data.from !== socket.id) {
         toast.custom(
           (t) => (
@@ -1050,7 +1188,7 @@ const RoomPage = () => {
     return () => socket.off("chat-message", handleChatMessage);
   }, [socket, state.remoteName]);
 
-  // This code waits until the microphone and camera are ready, then it automatically accepts the incoming call
+  // Process pending calls
   useEffect(() => {
     if (pendingIncomingCall.current && state.streamReady) {
       console.log("🔄 Processing pending call now that stream is ready");
@@ -1059,7 +1197,7 @@ const RoomPage = () => {
     }
   }, [state.streamReady, handleIncomingCall]);
 
-  // SavedName Display MyName (You) ex: Ali => A
+  // Load user name
   useEffect(() => {
     const savedData = localStorage.getItem("userData");
     if (savedData) {
@@ -1069,33 +1207,14 @@ const RoomPage = () => {
     }
   }, []);
 
-  // Debug function (optional, can be removed)
-  const debugWebRTC = () => {
-    console.log("=== WEBRTC DEBUG INFO ===");
-    console.log("Remote Socket ID:", remoteSocketIdRef.current);
-    console.log("Peer Connection:", peer);
-    console.log("ICE Servers:", peer?.getConfiguration()?.iceServers);
-    console.log("Connection State:", peer?.connectionState);
-    console.log("ICE Connection State:", peer?.iceConnectionState);
-    console.log("Remote Stream:", remoteStreamRef.current);
-    console.log("My Stream:", state.myStream);
-    console.log("Socket Connected:", socket?.connected);
-    console.log("Audio Processing Active:", state.audioProcessingActive);
-    console.log("Echo Cancellation:", state.echoCancellationEnabled);
-    console.log("Noise Suppression:", state.noiseSuppressionEnabled);
-    console.log("=========================");
-  };
-
-  // UI/UX Design - SAME AS BEFORE (unchanged)
   return (
     <div className="min-h-screen text-white flex bg-gradient-to-br from-gray-900 via-black to-blue-900">
-      {/* Header Inside Status & Clock */}
+      {/* Header */}
       <header className="fixed h-18 sm:h-16 flex items-center justify-between bg-[#000000] text-white shadow-2xl w-full p-2 sm:px-4">
         <div className="sm:flex items-center sm:space-x-4">
           {!remoteStreamRef.current || !state.remoteVideoReady ? (
             <span className="flex items-center font-sans font-semibold text-lg rounded-full">
-              <Circle className="bg-[#ff403f] text-[#ff403f] w-3.5 h-3.5 rounded-full mr-1" />{" "}
-              Disconnected
+              <Circle className="bg-[#ff403f] text-[#ff403f] w-3.5 h-3.5 rounded-full mr-1" /> Disconnected
             </span>
           ) : (
             <span className="flex items-center font-sans font-semibold px-3 py-1 text-lg rounded-full">
@@ -1103,13 +1222,11 @@ const RoomPage = () => {
             </span>
           )}
 
-          {/* Room ID display */}
           <div className="flex items-center space-x-4 mt-1 sm:mt-0">
             <span className="rounded-md text-lg font-bold">
               Room: <span className="text-blue-500"> {roomId}</span>
             </span>
 
-            {/* call Duration */}
             {state.remoteName && (
               <span className="p-0.5 sm:px-2 rounded-md font-sans font-semibold text-white text-lg">
                 {state.isCallActive ? <CallTime state={state} dispatch={dispatch} /> : "00:00"}
@@ -1151,7 +1268,6 @@ const RoomPage = () => {
             </span>
           )}
 
-          {/* Overlay when camera is off */}
           {!state.remoteCameraOn && state.remoteName && (
             <div className="absolute inset-0 flex items-center justify-center z-40">
               <span className="flex items-center justify-center w-18 h-18 rounded-full bg-blue-700 text-white text-4xl sm:text-5xl font-semibold shadow-lg">
@@ -1160,14 +1276,12 @@ const RoomPage = () => {
             </div>
           )}
 
-          {/* status */}
           {!state.remoteVideoReady && (
             <span className="absolute top-4 left-2 z-40 font-sans font-semibold bg-[#931cfb] px-3 py-1 text-sm rounded-full">
               Waiting for participants... {state.remoteCameraOn}
             </span>
           )}
 
-          {/* Waiting */}
           {!state.remoteVideoReady && !state.isSwapped && (
             <span className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-40 font-sans text-lg text-center">
               <CircleAlert className="text-center mx-auto my-2 w-10 h-10 text-yellow-600" />
@@ -1191,7 +1305,6 @@ const RoomPage = () => {
             className={`w-full h-full rounded-md object-cover shadow-2xl bg-[#0d1321] ${state.cameraOn ? "block" : "hidden"} `}
           />
 
-          {/* Local Video User A Name */}
           <span className="absolute top-2 left-2 z-40 font-sans font-semibold bg-green-700 px-3 py-1 text-sm rounded-full">
             {state.myName}
           </span>
@@ -1261,6 +1374,59 @@ const RoomPage = () => {
       {/* Leave when display message */}
       <Toaster position="top-right" reverseOrder={false} />
 
+      {/* Audio Controls Panel (Collapsible) */}
+      {state.showAudioControls && (
+        <div className="fixed bottom-32 left-4 bg-gray-900/90 backdrop-blur-lg p-4 rounded-xl shadow-2xl z-40 w-64">
+          <div className="flex justify-between items-center mb-4">
+            <h3 className="font-semibold">Audio Settings</h3>
+            <button 
+              onClick={() => dispatch({ type: "TOGGLE_AUDIO_CONTROLS" })}
+              className="p-1 hover:bg-gray-800 rounded"
+            >
+              <X size={16} />
+            </button>
+          </div>
+          
+          <div className="space-y-4">
+            <div>
+              <label className="text-sm opacity-75 mb-1 block">Speaker Volume</label>
+              <div className="flex items-center gap-2">
+              <VolumeX size={16} />
+              <input
+                type="range"
+                min="0"
+                max="1"
+                step="0.1"
+                value={state.speakerVolume}
+                onChange={(e) => adjustSpeakerVolume(parseFloat(e.target.value))}
+                className="flex-1"
+              />
+              <Volume2 size={16} />
+              </div>
+              <div className="text-xs text-right mt-1">{Math.round(state.speakerVolume * 100)}%</div>
+            </div>
+            
+            <div>
+              <label className="text-sm opacity-75 mb-1 block">Microphone Gain</label>
+              <div className="flex items-center gap-2">
+              <Volume1 size={16} />
+              <input
+                type="range"
+                min="0.1"
+                max="1"
+                step="0.1"
+                value={state.microphoneGain}
+                onChange={(e) => adjustMicrophoneGain(parseFloat(e.target.value))}
+                className="flex-1"
+              />
+              <Volume2 size={16} />
+              </div>
+              <div className="text-xs text-right mt-1">{Math.round(state.microphoneGain * 100)}%</div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* BOTTOM CONTROL BAR */}
       <div className="fixed flex flex-wrap w-full max-w-92 sm:max-w-md justify-center place-items-center gap-2.5 sm:gap-4 bottom-6 left-1/2 z-10 -translate-x-1/2 bg-[#0b1018] backdrop-blur-lg sm:px-2 py-3 rounded-xl shadow-lg">
         <div
@@ -1287,29 +1453,20 @@ const RoomPage = () => {
           {state.usingHandfree ? <Headphones /> : <Volume2 />}
         </div>
 
-        {/* Enhanced Audio Controls */}
+        <div
+          onClick={() => dispatch({ type: "TOGGLE_AUDIO_CONTROLS" })}
+          className="p-3 rounded-full bg-[#364355] hover:bg-[#2e4361] cursor-pointer"
+          title="Audio Settings"
+        >
+          <Volume1 />
+        </div>
+
         <div
           onClick={toggleEchoCancellation}
           className={`p-3 rounded-full ${state.echoCancellationEnabled ? 'bg-green-700' : 'bg-[#364355]'} hover:bg-[#2e4361] cursor-pointer`}
           title="Toggle Echo Cancellation"
         >
           <Ear className="w-5 h-5" />
-        </div>
-
-        <div
-          onClick={toggleNoiseSuppression}
-          className={`p-3 rounded-full ${state.noiseSuppressionEnabled ? 'bg-green-700' : 'bg-[#364355]'} hover:bg-[#2e4361] cursor-pointer`}
-          title="Toggle Noise Suppression"
-        >
-          <Mic className="w-5 h-5" />
-        </div>
-
-        <div
-          onClick={toggleAudioProcessing}
-          className={`p-3 rounded-full ${state.audioProcessingActive ? 'bg-green-700' : 'bg-[#364355]'} hover:bg-[#2e4361] cursor-pointer`}
-          title="Toggle Audio Processing"
-        >
-          <Volume2 className="w-5 h-5" />
         </div>
 
         <div
@@ -1337,7 +1494,7 @@ const RoomPage = () => {
         </div>
       </div>
 
-      {/* Audio Device Selection Dropdown (Optional - can be hidden by default) */}
+      {/* Audio Device Selection */}
       {state.audioDevices.length > 0 && (
         <div className="fixed bottom-28 right-4 bg-gray-800 p-2 rounded-lg shadow-lg z-50">
           <select
@@ -1355,17 +1512,142 @@ const RoomPage = () => {
         </div>
       )}
 
-      {/* Debug button (optional - remove in production) */}
-      {process.env.NODE_ENV === 'development' && (
-        <button
-          onClick={debugWebRTC}
-          className="fixed bottom-24 left-4 bg-gray-800 text-white p-2 rounded-full text-xs z-50"
-        >
-          🐛 Debug
-        </button>
+      {/* Tips for better audio quality */}
+      {state.usingHandfree && (
+        <div className="fixed top-20 left-1/2 transform -translate-x-1/2 bg-blue-900/90 text-white p-3 rounded-lg shadow-lg z-50 max-w-sm backdrop-blur-sm">
+          <div className="flex items-center gap-2">
+            <CircleAlert className="w-5 h-5" />
+            <span className="font-semibold">Speaker Mode Tips:</span>
+          </div>
+          <ul className="mt-2 text-sm space-y-1">
+            <li>• Keep microphone away from speakers</li>
+            <li>• Reduce volume if you hear echo</li>
+            <li>• Use headphones for best quality</li>
+          </ul>
+        </div>
       )}
     </div>
   );
 };
 
 export default RoomPage;
+
+// Update your roomReducer to include new actions
+export const initialState = {
+  myStream: null,
+  remoteStream: null,
+  cameraOn: true,
+  remoteCameraOn: true,
+  isSwapped: false,
+  unreadMessages: 0,
+  remoteVideoReady: false,
+  micOn: true,
+  streamReady: false,
+  hasJoinedRoom: false,
+  remoteEmail: "",
+  remoteName: "",
+  myName: "",
+  messages: [],
+  messageText: "",
+  screenSharing: false,
+  handfreeDeviceId: null,
+  usingHandfree: false,
+  chatClose: false,
+  callStartTime: null,
+  callDuration: { hours: 0, minutes: 0, seconds: 0 },
+  isCallActive: false,
+  echoCancellationEnabled: true,
+  noiseSuppressionEnabled: true,
+  audioDevices: [],
+  selectedAudioDevice: null,
+  audioProcessingActive: true,
+  speakerVolume: 0.5,
+  microphoneGain: 0.7,
+  isEchoTested: false,
+  showAudioControls: false,
+};
+
+export function roomReducer(state, action) {
+  switch (action.type) {
+    case "SET_MY_STREAM":
+      return { ...state, myStream: action.payload };
+    case "SET_REMOTE_STREAM":
+      return { ...state, remoteStream: action.payload };
+    case "TOGGLE_CAMERA":
+      return { ...state, cameraOn: !state.cameraOn };
+    case "SET_REMOTE_CAMERA":
+      return { ...state, remoteCameraOn: action.payload };
+    case "TOGGLE_MIC":
+      return { ...state, micOn: !state.micOn };
+    case "SET_STREAM_READY":
+      return { ...state, streamReady: action.payload };
+    case "SET_HAS_JOINED_ROOM":
+      return { ...state, hasJoinedRoom: action.payload };
+    case "SET_REMOTE_EMAIL":
+      return { ...state, remoteEmail: action.payload };
+    case "SET_MY_NAME":
+      return { ...state, myName: action.payload };
+    case "SET_REMOTE_NAME":
+      return { ...state, remoteName: action.payload };
+    case "SET_MESSAGES":
+      return { ...state, messages: action.payload };
+    case "ADD_MESSAGE":
+      return { ...state, messages: [...state.messages, action.payload] };
+    case "SET_MESSAGE_TEXT":
+      return { ...state, messageText: action.payload };
+    case "SET_SCREEN_SHARING":
+      return { ...state, screenSharing: action.payload };
+    case "SET_HANDFREE_DEVICE":
+      return { ...state, handfreeDeviceId: action.payload };
+    case "TOGGLE_HANDFREE":
+      return { ...state, usingHandfree: !state.usingHandfree };
+    case "INCREMENT_UNREAD":
+      return { ...state, unreadMessages: state.unreadMessages + 1 };
+    case "RESET_UNREAD":
+      return { ...state, unreadMessages: 0 };
+    case "SET_CHATCLOSE":
+      return { ...state, chatClose: action.payload };
+    case "SET_IsSWAPPED":
+      return { ...state, isSwapped: action.payload };
+    case "SET_REMOTEVIDEOREADY":
+      return { ...state, remoteVideoReady: action.payload };
+    case "START_CALL":
+      return {
+        ...state,
+        callStartTime: Date.now(),
+        isCallActive: true,
+      };
+    case "UPDATE_CALL_DURATION":
+      return {
+        ...state,
+        callDuration: action.payload,
+      };
+    case "END_CALL":
+      return {
+        ...state,
+        callStartTime: null,
+        isCallActive: false,
+        callDuration: { hours: 0, minutes: 0, seconds: 0 },
+      };
+    case "TOGGLE_ECHO_CANCELLATION":
+      return { ...state, echoCancellationEnabled: !state.echoCancellationEnabled };
+    case "TOGGLE_NOISE_SUPPRESSION":
+      return { ...state, noiseSuppressionEnabled: !state.noiseSuppressionEnabled };
+    case "SET_AUDIO_DEVICES":
+      return { ...state, audioDevices: action.payload };
+    case "SELECT_AUDIO_DEVICE":
+      return { ...state, selectedAudioDevice: action.payload };
+    case "SET_AUDIO_PROCESSING_ACTIVE":
+      return { ...state, audioProcessingActive: action.payload };
+    case "SET_SPEAKER_VOLUME":
+      return { ...state, speakerVolume: action.payload };
+    case "SET_MICROPHONE_GAIN":
+      return { ...state, microphoneGain: action.payload };
+    case "SET_ECHO_TESTED":
+      return { ...state, isEchoTested: action.payload };
+    case "TOGGLE_AUDIO_CONTROLS":
+      return { ...state, showAudioControls: !state.showAudioControls };
+    default:
+      return state;
+  }
+}
