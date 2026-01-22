@@ -12,14 +12,12 @@ function PeerProvider({ children }) {
 const peer = useMemo(() => {
   const pc = new RTCPeerConnection({
     iceServers: [
-      // STUN Servers
       {
         urls: [
           "stun:stun.l.google.com:19302",
           "stun:global.stun.twilio.com:3478",
         ],
       },
-      // TURN Servers (Your ExpressTURN)
       {
         urls: "turn:free.expressturn.com:3478",
         username: "000000002084452952",
@@ -28,35 +26,97 @@ const peer = useMemo(() => {
     ],
     iceCandidatePoolSize: 10,
     iceTransportPolicy: "all",
-    // CRITICAL: Configure audio/video codecs to prevent echo
+    // Audio echo cancellation ke liye zaroori settings
     sdpSemantics: 'unified-plan',
+    // Audio processing ke liye experimental settings
+    forceEncodedAudioInsertableStreams: true,
   });
 
-  // Configure audio tracks to prevent echo
+  // **IMPORTANT: Audio constraints ko enforce karein**
   const configureAudioTrack = (track) => {
     if (track.kind === 'audio') {
-      const settings = track.getSettings();
-      console.log("🔊 Audio track settings:", settings);
-      
-      // Apply echo cancellation
-      track.applyConstraints({
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true,
-        channelCount: 1, // Mono audio reduces echo
-      }).catch(err => console.error("Audio constraints error:", err));
+      // Detailed audio constraints
+      const constraints = {
+        echoCancellation: { ideal: true },
+        noiseSuppression: { ideal: true },
+        autoGainControl: { ideal: true },
+        // Echo cancellation level
+        echoCancellationType: 'system',
+        // Mono audio reduces echo significantly
+        channelCount: 1,
+        // Sample rate
+        sampleRate: 16000,
+        // Latency optimization
+        latency: 0.01,
+        // Noise suppression level
+        noiseSuppressionLevel: 'high',
+        // Volume normalization
+        autoGainControlLevel: 'adaptive'
+      };
+
+      track.applyConstraints(constraints).catch(err => {
+        console.warn("Audio constraints could not be applied:", err);
+      });
+
+      // Audio context create karein for better processing
+      try {
+        const audioContext = new (window.AudioContext || window.webkitAudioContext)({
+          sampleRate: 16000,
+          latencyHint: 'interactive'
+        });
+        
+        const source = audioContext.createMediaStreamSource(new MediaStream([track]));
+        const destination = audioContext.createMediaStreamDestination();
+        
+        // Noise gate filter
+        const noiseGate = audioContext.createGain();
+        noiseGate.gain.value = 0.1;
+        noiseGate.gain.setValueAtTime(0.1, audioContext.currentTime);
+        
+        source.connect(noiseGate);
+        noiseGate.connect(destination);
+        
+        // Update track with processed audio
+        const processedTrack = destination.stream.getAudioTracks()[0];
+        return processedTrack;
+      } catch (e) {
+        console.log("Web Audio API not available, using default track");
+        return track;
+      }
     }
+    return track;
   };
 
-  // Handle when tracks are added
+  // Handle track events
   pc.ontrack = (event) => {
-    console.log("🎵 Remote track added:", event.track.kind);
+    console.log("🎵 Remote track received:", event.track.kind);
+    
     if (event.track.kind === 'audio') {
-      configureAudioTrack(event.track);
+      // Remote audio ko process karein
+      const processedTrack = configureAudioTrack(event.track);
+      
+      // Replace original track with processed one
+      const stream = new MediaStream([processedTrack]);
+      
+      // Dispatch event for RoomPage to handle
+      const customEvent = new CustomEvent('processed-track', {
+        detail: { stream, track: processedTrack }
+      });
+      window.dispatchEvent(customEvent);
     }
   };
 
-  // Handle ICE candidates
+  // Track local audio to prevent echo
+  pc.onnegotiationneeded = async () => {
+    const senders = pc.getSenders();
+    senders.forEach(sender => {
+      if (sender.track && sender.track.kind === 'audio') {
+        configureAudioTrack(sender.track);
+      }
+    });
+  };
+
+  // Enhanced ICE handling
   pc.onicecandidate = (event) => {
     if (event.candidate && socket && remoteSocketIdRef.current) {
       socket.emit("ice-candidate", {
