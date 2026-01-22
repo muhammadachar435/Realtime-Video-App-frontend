@@ -3,7 +3,7 @@ import { useEffect, useCallback, useRef, useReducer, useMemo } from "react";
 import { useParams } from "react-router-dom";
 import { useSocket } from "../providers/Socket";
 import { usePeer } from "../providers/Peer";
-import { initialState, roomReducer } from "./roomReducer"; // Updated import
+import { initialState, roomReducer } from "../providers/roomReducer"; // Updated import
 import RealTimeClock from "../components/RealTimeClock";
 import CallTime from "../components/CallTime";
 import {
