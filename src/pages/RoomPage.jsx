@@ -55,6 +55,30 @@ const RoomPage = () => {
   // totalUsers
   const totalUsers = useMemo(() => (state.remoteName ? 2 : 1), [state.remoteName]);
 
+
+// Add this function near the top of your component
+const optimizeAudio = useCallback((stream) => {
+  if (!stream) return;
+  
+  const audioTracks = stream.getAudioTracks();
+  audioTracks.forEach(track => {
+    // Apply optimal audio constraints
+    track.applyConstraints({
+      echoCancellation: { ideal: true },
+      noiseSuppression: { ideal: true },
+      autoGainControl: { ideal: true },
+      channelCount: 1, // Mono - reduces echo
+      sampleRate: 16000, // Lower sample rate for mobile compatibility
+      latency: 0.01, // Low latency
+    }).then(() => {
+      console.log("✅ Audio optimized:", track.getSettings());
+    }).catch(err => {
+      console.warn("⚠️ Could not apply audio constraints:", err);
+    });
+  });
+}, []);
+
+  
   // Helper function to format call duration
   const getCallDurationText = () => {
     if (!state.callStartTime) return "0 seconds";
@@ -355,42 +379,132 @@ useEffect(() => {
   );
 
   // ------------------ Local Media ------------------
-  const getUserMediaStream = useCallback(async () => {
-    try {
-      console.log("🎥 Requesting camera and microphone access...");
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } },
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-      });
-
-      console.log("✅ Media devices accessed successfully");
-      dispatch({ type: "SET_MY_STREAM", payload: stream });
-      
-      if (myVideoRef.current) {
-        myVideoRef.current.srcObject = stream;
-        console.log("✅ Local video stream attached");
+ // Update your getUserMediaStream function:
+const getUserMediaStream = useCallback(async () => {
+  try {
+    console.log("🎥 Requesting camera and microphone access...");
+    
+    // Use these optimized constraints
+    const constraints = {
+      video: { 
+        width: { ideal: 640 }, // Reduced resolution
+        height: { ideal: 480 },
+        frameRate: { ideal: 24 },
+      },
+      audio: {
+        echoCancellation: { ideal: true },
+        noiseSuppression: { ideal: true },
+        autoGainControl: { ideal: true },
+        channelCount: 1, // Mono audio
+        sampleRate: 16000, // 16kHz sample rate
+        sampleSize: 16,
+        volume: 0.7, // Reduced volume to prevent feedback
       }
-      
-      await sendStream(stream);
-      dispatch({ type: "SET_STREAM_READY", payload: true });
-      console.log("✅ Stream ready for WebRTC");
+    };
 
-      // Handle pending incoming call automatically
-      if (pendingIncomingCall.current) {
-        console.log("🔄 Processing pending incoming call...");
-        handleIncomingCall(pendingIncomingCall.current);
-        pendingIncomingCall.current = null;
+    console.log("Using constraints:", constraints);
+    
+    const stream = await navigator.mediaDevices.getUserMedia(constraints);
+    console.log("✅ Media devices accessed successfully");
+    
+    // Optimize audio tracks
+    optimizeAudio(stream);
+    
+    dispatch({ type: "SET_MY_STREAM", payload: stream });
+    
+    if (myVideoRef.current) {
+      myVideoRef.current.srcObject = stream;
+      console.log("✅ Local video stream attached");
+      
+      // Set local video volume to 0 to prevent echo
+      myVideoRef.current.volume = 0;
+    }
+    
+    await sendStream(stream);
+    dispatch({ type: "SET_STREAM_READY", payload: true });
+    console.log("✅ Stream ready for WebRTC");
+
+    // Handle pending incoming call automatically
+    if (pendingIncomingCall.current) {
+      console.log("🔄 Processing pending incoming call...");
+      handleIncomingCall(pendingIncomingCall.current);
+      pendingIncomingCall.current = null;
+    }
+  } catch (err) {
+    console.error("❌ Error accessing media devices:", err);
+    
+    // Try with simpler constraints if failed
+    if (err.name === 'OverconstrainedError') {
+      console.log("🔄 Trying with simpler constraints...");
+      try {
+        const simpleStream = await navigator.mediaDevices.getUserMedia({
+          video: true,
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true
+          }
+        });
+        optimizeAudio(simpleStream);
+        dispatch({ type: "SET_MY_STREAM", payload: simpleStream });
+        if (myVideoRef.current) {
+          myVideoRef.current.srcObject = simpleStream;
+          myVideoRef.current.volume = 0;
+        }
+        await sendStream(simpleStream);
+        dispatch({ type: "SET_STREAM_READY", payload: true });
+      } catch (simpleErr) {
+        console.error("❌ Simple constraints also failed:", simpleErr);
+        toast.error("Failed to access camera/microphone");
       }
-    } catch (err) {
-      console.error("❌ Error accessing media devices:", err);
+    } else {
       toast.error("Failed to access camera/microphone");
     }
-  }, [sendStream, handleIncomingCall]);
-
+  }
+}, [sendStream, handleIncomingCall, optimizeAudio]);
+  
   useEffect(() => {
     getUserMediaStream();
   }, [getUserMediaStream]);
 
+// Add this useEffect for audio monitoring
+useEffect(() => {
+  if (!peer || !remoteStreamRef.current) return;
+
+  const monitorAudio = () => {
+    const audioTracks = remoteStreamRef.current?.getAudioTracks();
+    if (audioTracks && audioTracks.length > 0) {
+      console.log("🔊 Remote audio track status:", {
+        enabled: audioTracks[0].enabled,
+        muted: audioTracks[0].muted,
+        readyState: audioTracks[0].readyState
+      });
+    }
+  };
+
+  // Monitor audio every 2 seconds
+  const interval = setInterval(monitorAudio, 2000);
+  
+  // Fix audio echo by adjusting volume
+  if (remoteVideoRef.current) {
+    // Set optimal volume level
+    remoteVideoRef.current.volume = 0.7;
+    
+    // Add event listeners for audio issues
+    remoteVideoRef.current.addEventListener('volumechange', () => {
+      console.log("🔊 Remote video volume changed to:", remoteVideoRef.current.volume);
+    });
+  }
+
+  return () => {
+    clearInterval(interval);
+    if (remoteVideoRef.current) {
+      remoteVideoRef.current.removeEventListener('volumechange', () => {});
+    }
+  };
+}, [peer, remoteStreamRef.current]);
+  
+  
   // If remote video is not received yet, retry connecting after 1 second
   useEffect(() => {
     if (!remoteStreamRef.current && state.remoteEmail && state.streamReady) {
@@ -672,24 +786,62 @@ useEffect(() => {
 
   // ---------------- toggleHandFree -----------------------
   // This function switches between speaker mode and normal mode while managing microphone audio to avoid echo
-  const toggleHandfree = async () => {
-    if (!remoteVideoRef.current || !state.myStream) return;
+  // --------------- toggleMic ----------------------
+const toggleMic = () => {
+  if (!state.myStream) return;
+  
+  const newMicState = !state.micOn;
+  state.myStream.getAudioTracks().forEach((t) => {
+    t.enabled = newMicState;
+    console.log(`🎤 Microphone ${newMicState ? 'ENABLED' : 'DISABLED'}`);
+  });
+  
+  dispatch({ type: "TOGGLE_MIC" });
+  
+  toast(newMicState ? "Mic ON" : "Mic OFF", {
+    icon: newMicState ? "🎤" : "🔇",
+  });
+};
 
-    const micTracks = state.myStream.getAudioTracks();
+// ---------------- toggleHandFree -----------------------
+const toggleHandfree = async () => {
+  if (!remoteVideoRef.current || !state.myStream) return;
 
-    if (!state.usingHandfree && state.handfreeDeviceId) {
-      await remoteVideoRef.current.setSinkId(state.handfreeDeviceId);
-      micTracks.forEach((t) => (t.enabled = false));
-      dispatch({ type: "TOGGLE_HANDFREE" });
-      toast("Speaker Mode ON", { icon: "🔊" });
-    } else {
-      await remoteVideoRef.current.setSinkId("");
-      micTracks.forEach((t) => (t.enabled = true));
-      dispatch({ type: "TOGGLE_HANDFREE" });
-      toast("Speaker Mode OFF", { icon: "🎧" });
-    }
-  };
-
+  const newHandfreeState = !state.usingHandfree;
+  
+  if (newHandfreeState && state.handfreeDeviceId) {
+    // Switch to speaker mode
+    await remoteVideoRef.current.setSinkId(state.handfreeDeviceId);
+    
+    // Mute local microphone when using speaker to prevent echo
+    state.myStream.getAudioTracks().forEach((t) => {
+      t.enabled = false;
+    });
+    
+    // Reduce volume when on speaker
+    remoteVideoRef.current.volume = 0.6;
+    
+    console.log("🔊 Switched to speaker mode, mic muted");
+    toast("Speaker Mode ON (Mic Muted)", { icon: "🔊" });
+  } else {
+    // Switch back to normal mode
+    await remoteVideoRef.current.setSinkId("");
+    
+    // Re-enable microphone
+    state.myStream.getAudioTracks().forEach((t) => {
+      t.enabled = state.micOn; // Restore previous mic state
+    });
+    
+    // Restore normal volume
+    remoteVideoRef.current.volume = 0.7;
+    
+    console.log("🎧 Switched to normal mode");
+    toast("Speaker Mode OFF", { icon: "🎧" });
+  }
+  
+  dispatch({ type: "TOGGLE_HANDFREE" });
+};
+  
   //  ----------------- Chat Handle ---------------------
   const handleChat = () => {
     dispatch({ type: "SET_CHATCLOSE", payload: !state.chatClose });
@@ -832,6 +984,50 @@ const handleRemoteVideoReady = () => {
     console.log("=========================");
   };
 
+  // Add this emergency fix useEffect
+useEffect(() => {
+  if (!remoteVideoRef.current) return;
+  
+  // Wait 3 seconds after connection, then adjust settings
+  const timer = setTimeout(() => {
+    console.log("🔄 Applying audio echo fixes...");
+    
+    if (remoteVideoRef.current) {
+      // Critical: Mute local video element (it shouldn't play audio anyway)
+      if (myVideoRef.current) {
+        myVideoRef.current.muted = true;
+        myVideoRef.current.volume = 0;
+      }
+      
+      // Set remote audio to optimal levels
+      remoteVideoRef.current.volume = 0.7;
+      remoteVideoRef.current.muted = false;
+      
+      // Disable AEC if too aggressive
+      const remoteStream = remoteVideoRef.current.srcObject;
+      if (remoteStream) {
+        const audioTracks = remoteStream.getAudioTracks();
+        audioTracks.forEach(track => {
+          try {
+            track.applyConstraints({
+              echoCancellation: false, // Sometimes AEC causes issues
+              noiseSuppression: true,
+              autoGainControl: false, // Disable auto gain
+            });
+          } catch (err) {
+            console.warn("Could not adjust audio constraints:", err);
+          }
+        });
+      }
+      
+      console.log("✅ Audio echo fixes applied");
+    }
+  }, 3000);
+  
+  return () => clearTimeout(timer);
+}, [remoteVideoRef.current]);
+
+  
   // UI/UX Design
   return (
     <div className="min-h-screen text-white flex bg-gradient-to-br from-gray-900 via-black to-blue-900">
@@ -883,20 +1079,27 @@ const handleRemoteVideoReady = () => {
       ${state.isSwapped ? "top-4 right-4 w-56 sm:w-56 h-36 z-20 shadow-2xl" : "top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 inset-0 w-full xl:max-w-4xl h-[95%] z-10"}
     `}
         >
-         // In the REMOTE VIDEO section, update the video element:
-<video
+        <video
   ref={remoteVideoRef}
   autoPlay
   playsInline
+  muted={false} // Make sure this is FALSE
+  volume={0.7} // Set default volume
   onCanPlay={handleRemoteVideoReady}
   onLoadedMetadata={() => console.log("📹 Remote video metadata loaded")}
   onLoadedData={() => console.log("📹 Remote video data loaded")}
   onPlaying={() => {
     console.log("▶️ Remote video is playing");
     dispatch({ type: "SET_REMOTEVIDEOREADY", payload: true });
+    
+    // Set optimal audio settings when playing starts
+    if (remoteVideoRef.current) {
+      remoteVideoRef.current.volume = 0.7;
+    }
   }}
-  onStalled={() => console.log("⚠️ Remote video stalled")}
-  onError={(e) => console.error("❌ Remote video error:", e.target.error)}
+  onVolumeChange={() => {
+    console.log("🔊 Volume changed to:", remoteVideoRef.current?.volume);
+  }}
   className={`w-full h-full object-cover shadow-2xl rounded-md bg-[#0d1321] ${state.remoteCameraOn ? "block" : "hidden"} `}
 />
 
@@ -1045,6 +1248,35 @@ const handleRemoteVideoReady = () => {
         >
           {state.chatClose ? <MessageSquareText /> : <MessageSquareOff />}
         </div>
+
+        // Add these buttons to your bottom control bar (BOTTOM CONTROL BAR section):
+
+// Echo Test Button
+<div
+  onClick={() => {
+    if (remoteVideoRef.current) {
+      remoteVideoRef.current.volume = Math.max(0.1, remoteVideoRef.current.volume - 0.1);
+      toast(`Volume reduced to ${Math.round(remoteVideoRef.current.volume * 100)}%`);
+    }
+  }}
+  className={`p-3 rounded-full bg-purple-600 hover:bg-purple-700 cursor-pointer`}
+>
+  🔉
+</div>
+
+// Mute Remote Audio Button
+<div
+  onClick={() => {
+    if (remoteVideoRef.current) {
+      const isMuted = remoteVideoRef.current.muted;
+      remoteVideoRef.current.muted = !isMuted;
+      toast(isMuted ? "Remote audio UNMUTED" : "Remote audio MUTED");
+    }
+  }}
+  className={`p-3 rounded-full bg-orange-600 hover:bg-orange-700 cursor-pointer`}
+>
+  {remoteVideoRef.current?.muted ? "🔇" : "🔊"}
+</div>
 
         <div
           onClick={copyMeetingLink}
