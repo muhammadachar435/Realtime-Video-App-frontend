@@ -171,27 +171,43 @@ const peer = useMemo(() => {
     }
   };
 
-  const sendStream = async (stream) => {
-    try {
-      // Clear existing senders
-      const senders = peer.getSenders();
-      senders.forEach((sender) => {
-        if (sender.track) {
-          peer.removeTrack(sender);
-        }
-      });
-
-      // Add new tracks
-      stream.getTracks().forEach((track) => {
+  // PeerProvider.js mein
+const sendStream = async (stream) => {
+  try {
+    // Get all current senders
+    const currentSenders = peer.getSenders();
+    
+    stream.getTracks().forEach((track) => {
+      // Check if this track already exists in senders
+      const existingSender = currentSenders.find(
+        sender => sender.track && sender.track.kind === track.kind
+      );
+      
+      if (existingSender) {
+        // Replace track in existing sender
+        existingSender.replaceTrack(track);
+        console.log(`🔄 Replaced ${track.kind} track in existing sender`);
+      } else {
+        // Add new track
         peer.addTrack(track, stream);
-      });
+        console.log(`➕ Added new ${track.kind} track`);
+      }
+    });
 
-      console.log("✅ Stream tracks added to peer connection");
-    } catch (error) {
-      console.error("Error sending stream:", error);
-      throw error;
-    }
-  };
+    // Remove any senders that don't have corresponding tracks
+    currentSenders.forEach(sender => {
+      if (sender.track && !stream.getTracks().includes(sender.track)) {
+        peer.removeTrack(sender);
+        console.log(`🗑️ Removed unused ${sender.track?.kind} sender`);
+      }
+    });
+
+    console.log("✅ Stream tracks synchronized with peer connection");
+  } catch (error) {
+    console.error("Error sending stream:", error);
+    throw error;
+  }
+};
 
   // Cleanup
   useEffect(() => {
