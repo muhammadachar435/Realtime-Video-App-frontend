@@ -22,6 +22,11 @@ export const initialState = {
   callStartTime: null,
   callDuration: { hours: 0, minutes: 0, seconds: 0 },
   isCallActive: false,
+   echoCancellationEnabled: true,
+  noiseSuppressionEnabled: true,
+  audioDevices: [],
+  selectedAudioDevice: null,
+  audioProcessingActive: true
 };
 
 export function roomReducer(state, action) {
@@ -86,6 +91,16 @@ export function roomReducer(state, action) {
         isCallActive: false,
         callDuration: { hours: 0, minutes: 0, seconds: 0 },
       };
+      case "TOGGLE_ECHO_CANCELLATION":
+  return { ...state, echoCancellationEnabled: !state.echoCancellationEnabled };
+case "TOGGLE_NOISE_SUPPRESSION":
+  return { ...state, noiseSuppressionEnabled: !state.noiseSuppressionEnabled };
+case "SET_AUDIO_DEVICES":
+  return { ...state, audioDevices: action.payload };
+case "SELECT_AUDIO_DEVICE":
+  return { ...state, selectedAudioDevice: action.payload };
+case "SET_AUDIO_PROCESSING_ACTIVE":
+  return { ...state, audioProcessingActive: action.payload }
     default:
       return state;
   }
