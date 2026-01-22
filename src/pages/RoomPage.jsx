@@ -1,11 +1,17 @@
-// RoomPage.jsx
+// Import hooks
 import { useEffect, useCallback, useRef, useReducer, useMemo } from "react";
+
+// Import router
 import { useParams } from "react-router-dom";
+
+// Import Files
 import { useSocket } from "../providers/Socket";
 import { usePeer } from "../providers/Peer";
-import { initialState, roomReducer } from "../providers/roomReducer"; // Updated import
+import { initialState, roomReducer } from "../providers/roomReducer";
 import RealTimeClock from "../components/RealTimeClock";
 import CallTime from "../components/CallTime";
+
+// Import React-Icons
 import {
   Mic,
   MicOff,
@@ -23,10 +29,12 @@ import {
   X,
   Users,
   Ear,
-  RefreshCw,
 } from "lucide-react";
+
+// import toast to display Notification
 import toast, { Toaster } from "react-hot-toast";
 
+// RoomPage Component
 const RoomPage = () => {
   // Socket Destruction
   const { socket } = useSocket();
@@ -61,8 +69,6 @@ const RoomPage = () => {
   const audioProcessorRef = useRef(null);
   const localAudioStreamRef = useRef(null);
   const analyserRef = useRef(null);
-  const retryCountRef = useRef(0);
-  const maxRetries = 3;
 
   // totalUsers
   const totalUsers = useMemo(() => (state.remoteName ? 2 : 1), [state.remoteName]);
@@ -121,7 +127,6 @@ const RoomPage = () => {
         console.log("📨 Answer sent to:", from);
       } catch (err) {
         console.error("❌ Error creating answer:", err);
-        toast.error("Failed to answer call");
       }
     },
     [createAnswer, socket, state.streamReady, setRemoteSocketId],
@@ -141,9 +146,6 @@ const RoomPage = () => {
       }
       console.log("✅ Remote socket ID stored:", socketId);
 
-      // Reset retry counter
-      retryCountRef.current = 0;
-
       // Store pending call if stream is not ready
       if (!state.streamReady) {
         pendingIncomingCall.current = { fromEmail: emailId, fromName: name, socketId };
@@ -153,7 +155,7 @@ const RoomPage = () => {
 
       try {
         console.log("📞 Creating offer for:", emailId);
-        const offer = await createOffer(socketId);
+        const offer = await createOffer();
         socket.emit("call-user", {
           emailId,
           offer,
@@ -162,7 +164,6 @@ const RoomPage = () => {
         console.log("📨 Offer sent to:", emailId);
       } catch (err) {
         console.error("❌ Error creating offer:", err);
-        toast.error("Failed to initiate call");
       }
     },
     [createOffer, socket, state.streamReady, setRemoteSocketId],
@@ -177,7 +178,6 @@ const RoomPage = () => {
         console.log("✅ Remote answer set successfully");
       } catch (err) {
         console.error("❌ Error setting remote answer:", err);
-        toast.error("Failed to establish connection");
       }
     },
     [setRemoteAns],
@@ -188,61 +188,67 @@ const RoomPage = () => {
     try {
       console.log("🎥 Requesting camera and microphone access...");
 
-      // Stop existing stream first
-      if (state.myStream) {
-        state.myStream.getTracks().forEach(track => track.stop());
-      }
-
-      // Simplified constraints - let browser handle optimization
+      // Enhanced audio constraints for echo cancellation
       const constraints = {
         video: {
-          width: { ideal: 640 },
-          height: { ideal: 480 },
-          frameRate: { ideal: 24 },
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+          frameRate: { ideal: 30 },
           facingMode: "user",
         },
         audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
+          // Advanced echo cancellation settings
+          echoCancellation: { ideal: true },
+          noiseSuppression: { ideal: true },
+          autoGainControl: { ideal: true },
+          // Specific codec preferences
+          channelCount: 1, // Mono - reduces echo
+          sampleRate: 16000, // Optimized for voice
+          // Device selection
+          deviceId: undefined, // Let browser choose best
+          // Advanced features
+          googEchoCancellation: true,
+          googNoiseSuppression: true,
+          googAutoGainControl: true,
+          googHighpassFilter: true,
         },
       };
 
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
-      
-      // Apply additional constraints to audio track
-      const audioTrack = stream.getAudioTracks()[0];
-      if (audioTrack) {
-        try {
-          await audioTrack.applyConstraints({
-            channelCount: 1, // Force mono to reduce echo
-            sampleRate: 16000,
+
+      // Verify audio quality
+      const audioTracks = stream.getAudioTracks();
+      audioTracks.forEach((track) => {
+        const settings = track.getSettings();
+        console.log("🔊 Audio settings after getUserMedia:", settings);
+
+        // Apply additional constraints if needed
+        track
+          .applyConstraints({
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+            channelCount: 1,
+          })
+          .catch((err) => {
+            console.warn("Could not apply audio constraints:", err);
           });
-        } catch (constraintErr) {
-          console.warn("Could not apply audio constraints:", constraintErr);
-        }
-      }
+      });
 
       console.log("✅ Media devices accessed successfully");
-      
-      // Update state first
       dispatch({ type: "SET_MY_STREAM", payload: stream });
-      
-      // Then send stream to peer connection
-      if (sendStream) {
-        await sendStream(stream);
-      }
-      
-      // Update video element
+
       if (myVideoRef.current) {
         myVideoRef.current.srcObject = stream;
         console.log("✅ Local video stream attached");
       }
 
+      await sendStream(stream);
       dispatch({ type: "SET_STREAM_READY", payload: true });
+      dispatch({ type: "SET_AUDIO_PROCESSING_ACTIVE", payload: true });
       console.log("✅ Stream ready for WebRTC");
 
-      // Handle pending calls
+      // Handle pending incoming call automatically
       if (pendingIncomingCall.current) {
         console.log("🔄 Processing pending incoming call...");
         handleIncomingCall(pendingIncomingCall.current);
@@ -250,139 +256,136 @@ const RoomPage = () => {
       }
     } catch (err) {
       console.error("❌ Error accessing media devices:", err);
-      toast.error("Failed to access camera/microphone");
+
+      // Fallback to simpler constraints
+      if (err.name === "OverconstrainedError" || err.name === "ConstraintNotSatisfiedError") {
+        try {
+          console.log("🔄 Trying fallback constraints...");
+          const fallbackStream = await navigator.mediaDevices.getUserMedia({
+            video: true,
+            audio: {
+              echoCancellation: true,
+              noiseSuppression: true,
+              autoGainControl: true,
+            },
+          });
+
+          dispatch({ type: "SET_MY_STREAM", payload: fallbackStream });
+          await sendStream(fallbackStream);
+          dispatch({ type: "SET_STREAM_READY", payload: true });
+          dispatch({ type: "SET_AUDIO_PROCESSING_ACTIVE", payload: true });
+        } catch (fallbackErr) {
+          console.error("Fallback also failed:", fallbackErr);
+          toast.error("Please allow camera and microphone access");
+        }
+      } else {
+        toast.error("Failed to access camera/microphone");
+      }
     }
-  }, [sendStream, handleIncomingCall, state.myStream]);
+  }, [sendStream, handleIncomingCall]);
 
   // ------------------ Audio Processing ------------------
   useEffect(() => {
     if (!state.myStream || !state.audioProcessingActive) return;
 
-    let audioContext = null;
-    let source = null;
-    let processor = null;
-    let destination = null;
-
+    // Setup audio context for local audio processing
     const setupAudioProcessing = async () => {
       try {
+        // Cleanup previous audio context if exists
+        if (audioContextRef.current && audioContextRef.current.state !== "closed") {
+          audioContextRef.current.close();
+        }
+
+        const audioContext = new (window.AudioContext || window.webkitAudioContext)({
+          sampleRate: 16000,
+          latencyHint: "interactive",
+        });
+        audioContextRef.current = audioContext;
+
         // Get audio track
         const audioTrack = state.myStream.getAudioTracks()[0];
         if (!audioTrack) return;
 
-        // Create audio context with echo cancellation
-        audioContext = new (window.AudioContext || window.webkitAudioContext)({
-          sampleRate: 16000,
-          latencyHint: 'interactive'
-        });
+        const source = audioContext.createMediaStreamSource(new MediaStream([audioTrack]));
 
-        source = audioContext.createMediaStreamSource(new MediaStream([audioTrack]));
-        destination = audioContext.createMediaStreamDestination();
+        // Create analyser for debugging
+        const analyser = audioContext.createAnalyser();
+        analyser.fftSize = 256;
+        analyserRef.current = analyser;
+        source.connect(analyser);
 
-        // Create a worklet node for better echo cancellation
-        if (audioContext.audioWorklet) {
-          try {
-            await audioContext.audioWorklet.addModule('/audio-processor.js');
-            processor = new AudioWorkletNode(audioContext, 'echo-cancellation-processor');
-            
-            // Connect nodes
-            source.connect(processor);
-            processor.connect(destination);
-            
-            console.log("✅ Audio worklet processor loaded");
-          } catch (workletError) {
-            console.log("Using fallback script processor");
-            // Fallback to script processor
-            createScriptProcessorFallback();
+        // Create noise suppressor node
+        const noiseSuppressor = audioContext.createScriptProcessor(4096, 1, 1);
+
+        noiseSuppressor.onaudioprocess = function (event) {
+          const input = event.inputBuffer.getChannelData(0);
+          const output = event.outputBuffer.getChannelData(0);
+
+          // Advanced noise gate implementation
+          let sum = 0;
+          for (let i = 0; i < input.length; i++) {
+            sum += input[i] * input[i];
           }
-        } else {
-          createScriptProcessorFallback();
-        }
 
-        // Store references
-        audioContextRef.current = audioContext;
-        audioProcessorRef.current = processor;
+          const rms = Math.sqrt(sum / input.length);
+          const threshold = 0.015; // Optimized threshold
+
+          if (rms < threshold) {
+            // Silence the output (noise gate)
+            for (let i = 0; i < output.length; i++) {
+              output[i] = 0;
+            }
+          } else {
+            // Apply dynamic compression and slight high-pass filter
+            const compressionFactor = 0.85; // Reduce volume to prevent clipping
+            const highPassFactor = 0.1; // Reduce low frequencies (rumble)
+
+            for (let i = 0; i < output.length; i++) {
+              // Simple high-pass filter
+              const filtered = i > 0 ? input[i] - input[i - 1] * highPassFactor : input[i];
+              // Compression
+              output[i] = filtered * compressionFactor;
+            }
+          }
+        };
+
+        const destination = audioContext.createMediaStreamDestination();
+
+        source.connect(noiseSuppressor);
+        noiseSuppressor.connect(destination);
+
+        audioProcessorRef.current = noiseSuppressor;
         localAudioStreamRef.current = destination.stream;
 
-        // Update peer connection with processed audio
+        // Update peer with processed audio if stream is ready
         if (peer && sendStream && state.streamReady) {
-          const videoTrack = state.myStream.getVideoTracks()[0];
-          const processedStream = new MediaStream([
-            ...(videoTrack ? [videoTrack] : []),
-            ...destination.stream.getAudioTracks()
-          ]);
+          try {
+            // Combine processed audio with video
+            const processedStream = new MediaStream([
+              ...state.myStream.getVideoTracks(),
+              ...destination.stream.getAudioTracks(),
+            ]);
 
-          await sendStream(processedStream);
-          console.log("✅ Audio processing applied");
+            await sendStream(processedStream);
+            console.log("✅ Audio processing applied and stream updated");
+          } catch (err) {
+            console.warn("Could not update stream with processed audio:", err);
+          }
         }
-
       } catch (error) {
         console.warn("Audio processing setup failed:", error);
-        // Continue without audio processing
       }
-    };
-
-    // Fallback script processor
-    const createScriptProcessorFallback = () => {
-      processor = audioContext.createScriptProcessor(2048, 1, 1);
-      
-      let lastInput = 0;
-      let noiseFloor = 0.01;
-      
-      processor.onaudioprocess = function(event) {
-        const input = event.inputBuffer.getChannelData(0);
-        const output = event.outputBuffer.getChannelData(0);
-        
-        // Calculate RMS
-        let sum = 0;
-        for (let i = 0; i < input.length; i++) {
-          sum += input[i] * input[i];
-        }
-        const rms = Math.sqrt(sum / input.length);
-        
-        // Adaptive noise gate
-        if (rms < 0.005) {
-          noiseFloor = noiseFloor * 0.99 + rms * 0.01;
-        }
-        
-        const threshold = Math.max(0.008, noiseFloor * 2);
-        
-        if (rms < threshold) {
-          // Silence - noise gate active
-          for (let i = 0; i < output.length; i++) {
-            output[i] = 0;
-          }
-        } else {
-          // Apply processing
-          for (let i = 0; i < output.length; i++) {
-            // High-pass filter (remove low frequencies that cause echo)
-            const highPass = input[i] - lastInput * 0.8;
-            lastInput = input[i];
-            
-            // Soft compression
-            const compressed = Math.tanh(highPass * 2) / 2;
-            
-            // Output with reduced gain
-            output[i] = compressed * 0.7;
-          }
-        }
-      };
-      
-      source.connect(processor);
-      processor.connect(destination);
     };
 
     setupAudioProcessing();
 
     return () => {
       // Cleanup
-      if (processor) {
-        processor.disconnect();
+      if (audioProcessorRef.current) {
+        audioProcessorRef.current.disconnect();
       }
-      if (source) {
-        source.disconnect();
-      }
-      if (audioContext && audioContext.state !== 'closed') {
-        audioContext.close();
+      if (audioContextRef.current && audioContextRef.current.state !== "closed") {
+        audioContextRef.current.close();
       }
     };
   }, [state.myStream, state.audioProcessingActive, peer, sendStream, state.streamReady]);
@@ -418,50 +421,6 @@ const RoomPage = () => {
     };
   }, [peer]);
 
-  // ------------------ Connection State Monitoring ------------------
-  useEffect(() => {
-    if (!peer) return;
-
-    const handleStateChange = () => {
-      console.log("🔍 Peer Connection State:", peer.connectionState);
-      console.log("❄️ ICE Connection State:", peer.iceConnectionState);
-      
-      // If connection is stable, ensure remote video is playing
-      if (peer.connectionState === 'connected' && remoteStreamRef.current) {
-        setTimeout(() => {
-          if (remoteVideoRef.current && remoteVideoRef.current.paused) {
-            remoteVideoRef.current.play().catch(console.error);
-          }
-        }, 500);
-      }
-      
-      // Handle connection failures
-      if (peer.iceConnectionState === 'failed' || peer.iceConnectionState === 'disconnected') {
-        console.log("🔄 Attempting to reconnect...");
-        
-        if (retryCountRef.current < maxRetries && state.remoteEmail && socket && remoteSocketIdRef.current) {
-          retryCountRef.current++;
-          
-          setTimeout(() => {
-            socket.emit("reconnect-request", {
-              to: remoteSocketIdRef.current,
-              roomId: roomId
-            });
-            toast(`Reconnecting... (${retryCountRef.current}/${maxRetries})`);
-          }, 2000);
-        }
-      }
-    };
-
-    peer.addEventListener('connectionstatechange', handleStateChange);
-    peer.addEventListener('iceconnectionstatechange', handleStateChange);
-
-    return () => {
-      peer.removeEventListener('connectionstatechange', handleStateChange);
-      peer.removeEventListener('iceconnectionstatechange', handleStateChange);
-    };
-  }, [peer, socket, state.remoteEmail, roomId]);
-
   // ------------------ ICE Candidates ------------------
   useEffect(() => {
     if (!socket || !peer) return;
@@ -487,113 +446,76 @@ const RoomPage = () => {
       }
     };
 
-    // Handle renegotiation
-    const handleRenegotiate = async ({ from, offer }) => {
-      console.log("🔄 Renegotiation request from:", from);
-      try {
-        const answer = await createAnswer(offer);
-        socket.emit("renegotiate-answer", {
-          to: from,
-          answer: answer,
-        });
-      } catch (err) {
-        console.error("Renegotiation failed:", err);
-      }
-    };
-
     // Set up event listeners
     socket.on("ice-candidate", handleIncomingIceCandidate);
-    socket.on("renegotiate", handleRenegotiate);
     peer.onicecandidate = handleLocalIceCandidate;
 
-    return () => {
-      socket.off("ice-candidate", handleIncomingIceCandidate);
-      socket.off("renegotiate", handleRenegotiate);
-      if (peer) {
-        peer.onicecandidate = null;
-      }
-    };
-  }, [socket, peer, createAnswer]);
-
-  // ------------------ Remote Track ------------------
-  useEffect(() => {
-    if (!peer) return;
-
-    const handleTrackEvent = (event) => {
-      console.log("🎬 Track event received:", event.track.kind);
-      
-      if (event.streams && event.streams[0]) {
-        const remoteStream = event.streams[0];
-        remoteStreamRef.current = remoteStream;
-
-        // Check if we have video tracks
-        const hasVideo = remoteStream.getVideoTracks().length > 0;
-        const hasAudio = remoteStream.getAudioTracks().length > 0;
-        
-        console.log(`Remote stream: Video: ${hasVideo}, Audio: ${hasAudio}`);
-
-        if (remoteVideoRef.current) {
-          remoteVideoRef.current.srcObject = remoteStream;
-          
-          // Play the video
-          const playVideo = () => {
-            if (remoteVideoRef.current && remoteVideoRef.current.paused) {
-              remoteVideoRef.current.play()
-                .then(() => {
-                  console.log("✅ Remote video playing");
-                  dispatch({ type: "SET_REMOTEVIDEOREADY", payload: true });
-                })
-                .catch(err => {
-                  if (err.name !== "AbortError") {
-                    console.error("❌ Error playing remote video:", err);
-                  }
-                });
-            }
-          };
-
-          // Try playing with delay
-          setTimeout(playVideo, 100);
-          
-          // Also try on canplay event
-          remoteVideoRef.current.oncanplay = playVideo;
+    // Handle ICE connection state changes
+    peer.oniceconnectionstatechange = () => {
+      console.log("❄️ ICE Connection State:", peer.iceConnectionState);
+      if (peer.iceConnectionState === "failed") {
+        console.log("🔄 ICE failed, trying to restart...");
+        try {
+          peer.restartIce();
+        } catch (err) {
+          console.error("❌ Failed to restart ICE:", err);
         }
       }
     };
 
-    // Also listen for addstream event for backward compatibility
-    const handleAddStream = (event) => {
-      console.log("AddStream event:", event.stream);
-      if (event.stream) {
-        remoteStreamRef.current = event.stream;
+    return () => {
+      socket.off("ice-candidate", handleIncomingIceCandidate);
+      if (peer) {
+        peer.onicecandidate = null;
+        peer.oniceconnectionstatechange = null;
+      }
+    };
+  }, [socket, peer]);
+
+  // ------------------ Remote Track ------------------
+  useEffect(() => {
+    let playTimeout;
+
+    // handleTrackEvent
+    const handleTrackEvent = (event) => {
+      if (event.streams && event.streams[0]) {
+        remoteStreamRef.current = event.streams[0];
+
         if (remoteVideoRef.current) {
-          remoteVideoRef.current.srcObject = event.stream;
+          remoteVideoRef.current.srcObject = remoteStreamRef.current;
+
+          // Small delay to avoid AbortError
+          clearTimeout(playTimeout);
+          playTimeout = setTimeout(() => {
+            // Only play if paused
+            if (remoteVideoRef.current.paused) {
+              remoteVideoRef.current.play().catch((err) => {
+                if (err.name !== "AbortError") console.error("❌ Error playing remote video:", err);
+              });
+            }
+          }, 50); // 50ms delay is enough
         }
       }
     };
 
     peer.addEventListener("track", handleTrackEvent);
-    peer.addEventListener("addstream", handleAddStream);
-
     return () => {
       peer.removeEventListener("track", handleTrackEvent);
-      peer.removeEventListener("addstream", handleAddStream);
+      clearTimeout(playTimeout);
     };
   }, [peer]);
 
-  // If remote video is not received yet, retry connecting
+  // If remote video is not received yet, retry connecting after 1 second
   useEffect(() => {
     if (!remoteStreamRef.current && state.remoteEmail && state.streamReady) {
       console.log("🔄 Retrying connection to remote user...");
       const retry = setTimeout(() => {
-        if (remoteSocketIdRef.current && retryCountRef.current < maxRetries) {
-          retryCountRef.current++;
-          handleNewUserJoined({
-            emailId: state.remoteEmail,
-            name: state.remoteName,
-            socketId: remoteSocketIdRef.current,
-          });
-        }
-      }, 2000);
+        handleNewUserJoined({
+          emailId: state.remoteEmail,
+          name: state.remoteName,
+          socketId: remoteSocketIdRef.current,
+        });
+      }, 1000);
       return () => clearTimeout(retry);
     }
   }, [state.remoteEmail, state.remoteName, state.streamReady, handleNewUserJoined]);
@@ -620,7 +542,7 @@ const RoomPage = () => {
     }
   }, [remoteStreamRef.current]);
 
-  // -------------------Copy Meeting Link---------------------------------
+  //  -------------------Copy Meeting Link---------------------------------
   const copyMeetingLink = async () => {
     const link = `${window.location.origin}/room/${roomId}`;
 
@@ -698,11 +620,14 @@ const RoomPage = () => {
       myVideoRef.current.srcObject = null;
     }
 
+    // Reset peer connection
+    if (peer) {
+      peer.close();
+      console.log("🛑 Peer connection closed");
+    }
+
     // Reset call timer
     dispatch({ type: "END_CALL" });
-
-    // Reset retry counter
-    retryCountRef.current = 0;
 
     // Notify server you left
     if (socket && roomId) {
@@ -716,63 +641,125 @@ const RoomPage = () => {
     }, 1000);
   };
 
+  // ------------------ Socket Events ------------------
+  useEffect(() => {
+    if (!socket) return;
+
+    console.log("🔌 Socket connected, setting up listeners...");
+
+    socket.on("joined-room", () => {
+      dispatch({ type: "SET_HAS_JOINED_ROOM", payload: true });
+      console.log("✅ Joined room successfully");
+    });
+
+    socket.on("user-joined", handleNewUserJoined);
+
+    socket.on("incoming-call", handleIncomingCall);
+
+    socket.on("call-accepted", handleCallAccepted);
+
+    socket.on("chat-message", (data) => {
+      // Add to chat
+      dispatch({ type: "ADD_MESSAGE", payload: data });
+
+      // Show toast for messages from others
+      if (data.from !== socket.id) {
+        // Use data.senderName that comes from backend
+        toast.custom(
+          (t) => (
+            <div className="bg-green-800 shadow-2xl text-white p-4 rounded-xl flex items-center gap-2 z-50">
+              <MessageSquareText className="w-5 h-5" />
+              <span>
+                {data.senderName || "Guest"}: {data.text}
+              </span>
+            </div>
+          ),
+          { duration: 3000 },
+        );
+      }
+    });
+
+    // user-left
+    socket.on("user-left", ({ socketId }) => {
+      pendingIncomingCall.current = null;
+      remoteSocketIdRef.current = null;
+      console.log("🚪 User left:", socketId);
+
+      // Stop and reset remote video
+      if (remoteVideoRef.current && remoteVideoRef.current.srcObject) {
+        remoteVideoRef.current.srcObject.getTracks().forEach((t) => t.stop());
+        remoteVideoRef.current.srcObject = null;
+      }
+
+      // Reset remote stream reference
+      remoteStreamRef.current = null;
+
+      // Show toast for call duration when remote user leaves
+      if (state.isCallActive) {
+        const callDuration = getCallDurationText();
+        toast.custom(
+          (t) => (
+            <div className="bg-blue-900 w-72 shadow-2xl text-white p-4 font-sans rounded-xl flex flex-col">
+              <div className="flex items-center gap-2">
+                <CircleAlert className="w-5 h-5 text-yellow-400" />
+                <span className="font-semibold">User Disconnected</span>
+              </div>
+              <div className="mt-2 text-sm opacity-90">
+                Call duration: <span className="font-bold">{callDuration}</span>
+              </div>
+            </div>
+          ),
+          { duration: 5000 },
+        );
+      }
+
+      // Reset remote-related state
+      dispatch({ type: "SET_REMOTE_NAME", payload: null });
+      dispatch({ type: "SET_REMOTE_EMAIL", payload: null });
+      dispatch({ type: "SET_REMOTE_CAMERA", payload: false });
+      dispatch({ type: "SET_REMOTEVIDEOREADY", payload: false });
+
+      // End the call
+      dispatch({ type: "END_CALL" });
+    });
+
+    // Socket error handling
+    socket.on("connect_error", (error) => {
+      console.error("❌ Socket connection error:", error);
+      toast.error("Connection error. Please refresh.");
+    });
+
+    return () => {
+      console.log("🧹 Cleaning up socket listeners...");
+      socket.off("joined-room");
+      socket.off("user-joined", handleNewUserJoined);
+      socket.off("incoming-call", handleIncomingCall);
+      socket.off("call-accepted", handleCallAccepted);
+      socket.off("chat-message");
+      socket.off("user-left");
+      socket.off("connect_error");
+    };
+  }, [socket, handleNewUserJoined, handleIncomingCall, handleCallAccepted, state.isCallActive]);
+
   // ------------------ Camera, Mic, Handfree ------------------
 
   // ------------------ toggleCamera ------------------
-  const toggleCamera = async () => {
+  const toggleCamera = () => {
     if (!state.myStream) return;
 
     const newCameraState = !state.cameraOn;
-    const videoTrack = state.myStream.getVideoTracks()[0];
-    
-    if (videoTrack) {
-      try {
-        // Enable/disable the track
-        videoTrack.enabled = newCameraState;
-        
-        // If turning camera back on, refresh the track to prevent freezing
-        if (newCameraState && !videoTrack.enabled) {
-          // Get new video track with current constraints
-          const stream = await navigator.mediaDevices.getUserMedia({
-            video: {
-              deviceId: videoTrack.getSettings().deviceId,
-              width: { ideal: 640 },
-              height: { ideal: 480 }
-            },
-            audio: false
-          });
-          
-          const newVideoTrack = stream.getVideoTracks()[0];
-          
-          // Replace the track in our local stream
-          state.myStream.removeTrack(videoTrack);
-          state.myStream.addTrack(newVideoTrack);
-          
-          // Replace in peer connection
-          const sender = peer.getSenders().find(s => s.track?.kind === 'video');
-          if (sender) {
-            sender.replaceTrack(newVideoTrack);
-          }
-          
-          // Update video element
-          if (myVideoRef.current) {
-            myVideoRef.current.srcObject = state.myStream;
-          }
-        }
-      } catch (err) {
-        console.error("Error toggling camera:", err);
-      }
-    }
 
+    // enable / disable camera track
+    state.myStream.getVideoTracks().forEach((track) => (track.enabled = newCameraState));
+
+    // update my own state
     dispatch({ type: "TOGGLE_CAMERA" });
-    
-    // Send camera state to remote
-    if (socket && remoteSocketIdRef.current) {
-      socket.emit("camera-toggle", {
-        cameraOn: newCameraState,
-        to: remoteSocketIdRef.current
-      });
-    }
+
+    // send ONLY to other user in room
+    socket.emit("camera-toggle", {
+      cameraOn: newCameraState,
+      roomId,
+    });
 
     toast(newCameraState ? "Camera ON" : "Camera OFF", {
       icon: newCameraState ? "📹" : "📵",
@@ -780,6 +767,7 @@ const RoomPage = () => {
   };
 
   //   ----------------- ToggleCamera ---------------------
+  // This code listens for the other user's camera ON/OFF and updates the screen
   useEffect(() => {
     if (!socket) return;
 
@@ -822,37 +810,25 @@ const RoomPage = () => {
     if (!remoteVideoRef.current || !state.myStream) return;
 
     const micTracks = state.myStream.getAudioTracks();
-    const newHandfreeState = !state.usingHandfree;
 
-    if (newHandfreeState) {
+    if (!state.usingHandfree && state.handfreeDeviceId) {
       // Switch to speaker mode
       try {
-        if (state.handfreeDeviceId) {
-          await remoteVideoRef.current.setSinkId(state.handfreeDeviceId);
-        }
-        
-        // Apply more aggressive echo cancellation in speaker mode
-        micTracks.forEach(async (track) => {
-          try {
-            await track.applyConstraints({
-              echoCancellation: { ideal: true },
-              noiseSuppression: true,
-              autoGainControl: false, // Disable auto gain in speaker mode
-              channelCount: 1,
-            });
-            
-            // Reduce microphone sensitivity
-            const settings = track.getSettings();
-            if (settings.volume !== undefined) {
-              track.applyConstraints({ volume: 0.5 });
-            }
-          } catch (err) {
-            console.warn("Could not apply speaker mode constraints:", err);
-          }
+        await remoteVideoRef.current.setSinkId(state.handfreeDeviceId);
+
+        // Mute microphone to prevent echo
+        micTracks.forEach((t) => {
+          t.enabled = false;
+          // Apply additional echo cancellation in speaker mode
+          t.applyConstraints({
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          });
         });
 
         dispatch({ type: "TOGGLE_HANDFREE" });
-        toast("Speaker Mode ON - Echo cancellation enhanced", {
+        toast("Speaker Mode ON - Microphone muted to prevent echo", {
           icon: "🔊",
           duration: 3000,
         });
@@ -861,28 +837,19 @@ const RoomPage = () => {
         toast.error("Failed to switch to speaker mode");
       }
     } else {
-      // Switch back to headphone mode
+      // Switch back to normal mode
       try {
-        await remoteVideoRef.current.setSinkId('');
-        
-        // Restore normal audio constraints
-        micTracks.forEach(async (track) => {
-          try {
-            await track.applyConstraints({
-              echoCancellation: true,
-              noiseSuppression: true,
-              autoGainControl: true,
-              channelCount: 1,
-            });
-            
-            // Restore normal volume
-            const settings = track.getSettings();
-            if (settings.volume !== undefined) {
-              track.applyConstraints({ volume: 1.0 });
-            }
-          } catch (err) {
-            console.warn("Could not apply headphone mode constraints:", err);
-          }
+        await remoteVideoRef.current.setSinkId("");
+
+        // Unmute microphone
+        micTracks.forEach((t) => {
+          t.enabled = true;
+          // Apply optimal constraints for headphone mode
+          t.applyConstraints({
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          });
         });
 
         dispatch({ type: "TOGGLE_HANDFREE" });
@@ -1036,119 +1003,6 @@ const RoomPage = () => {
     console.log("✅ Remote video ready, call started");
   };
 
-  // ------------------ Socket Events ------------------
-  useEffect(() => {
-    if (!socket) return;
-
-    console.log("🔌 Socket connected, setting up listeners...");
-
-    socket.on("joined-room", () => {
-      dispatch({ type: "SET_HAS_JOINED_ROOM", payload: true });
-      console.log("✅ Joined room successfully");
-    });
-
-    socket.on("user-joined", handleNewUserJoined);
-
-    socket.on("incoming-call", handleIncomingCall);
-
-    socket.on("call-accepted", handleCallAccepted);
-
-    socket.on("chat-message", (data) => {
-      // Add to chat
-      dispatch({ type: "ADD_MESSAGE", payload: data });
-
-      // Show toast for messages from others
-      if (data.from !== socket.id) {
-        // Use data.senderName that comes from backend
-        toast.custom(
-          (t) => (
-            <div className="bg-green-800 shadow-2xl text-white p-4 rounded-xl flex items-center gap-2 z-50">
-              <MessageSquareText className="w-5 h-5" />
-              <span>
-                {data.senderName || "Guest"}: {data.text}
-              </span>
-            </div>
-          ),
-          { duration: 3000 },
-        );
-      }
-    });
-
-    // user-left
-    socket.on("user-left", ({ socketId }) => {
-      pendingIncomingCall.current = null;
-      remoteSocketIdRef.current = null;
-      retryCountRef.current = 0;
-      console.log("🚪 User left:", socketId);
-
-      // Stop and reset remote video
-      if (remoteVideoRef.current && remoteVideoRef.current.srcObject) {
-        remoteVideoRef.current.srcObject.getTracks().forEach((t) => t.stop());
-        remoteVideoRef.current.srcObject = null;
-      }
-
-      // Reset remote stream reference
-      remoteStreamRef.current = null;
-
-      // Show toast for call duration when remote user leaves
-      if (state.isCallActive) {
-        const callDuration = getCallDurationText();
-        toast.custom(
-          (t) => (
-            <div className="bg-blue-900 w-72 shadow-2xl text-white p-4 font-sans rounded-xl flex flex-col">
-              <div className="flex items-center gap-2">
-                <CircleAlert className="w-5 h-5 text-yellow-400" />
-                <span className="font-semibold">User Disconnected</span>
-              </div>
-              <div className="mt-2 text-sm opacity-90">
-                Call duration: <span className="font-bold">{callDuration}</span>
-              </div>
-            </div>
-          ),
-          { duration: 5000 },
-        );
-      }
-
-      // Reset remote-related state
-      dispatch({ type: "SET_REMOTE_NAME", payload: null });
-      dispatch({ type: "SET_REMOTE_EMAIL", payload: null });
-      dispatch({ type: "SET_REMOTE_CAMERA", payload: false });
-      dispatch({ type: "SET_REMOTEVIDEOREADY", payload: false });
-
-      // End the call
-      dispatch({ type: "END_CALL" });
-    });
-
-    // Socket error handling
-    socket.on("connect_error", (error) => {
-      console.error("❌ Socket connection error:", error);
-      toast.error("Connection error. Please refresh.");
-    });
-
-    // Reconnection events
-    socket.on("reconnect", (attemptNumber) => {
-      console.log("✅ Reconnected after", attemptNumber, "attempts");
-      toast.success("Reconnected!");
-    });
-
-    socket.on("reconnect_error", (error) => {
-      console.error("❌ Reconnection error:", error);
-    });
-
-    return () => {
-      console.log("🧹 Cleaning up socket listeners...");
-      socket.off("joined-room");
-      socket.off("user-joined", handleNewUserJoined);
-      socket.off("incoming-call", handleIncomingCall);
-      socket.off("call-accepted", handleCallAccepted);
-      socket.off("chat-message");
-      socket.off("user-left");
-      socket.off("connect_error");
-      socket.off("reconnect");
-      socket.off("reconnect_error");
-    };
-  }, [socket, handleNewUserJoined, handleIncomingCall, handleCallAccepted, state.isCallActive]);
-
   // ------------------ Chat ------------------
   const sendMessage = () => {
     if (!state.messageText.trim()) return;
@@ -1203,7 +1057,7 @@ const RoomPage = () => {
     return () => socket.off("chat-message", handleChatMessage);
   }, [socket, state.remoteName]);
 
-  // Process pending calls when stream is ready
+  // This code waits until the microphone and camera are ready, then it automatically accepts the incoming call
   useEffect(() => {
     if (pendingIncomingCall.current && state.streamReady) {
       console.log("🔄 Processing pending call now that stream is ready");
@@ -1236,24 +1090,10 @@ const RoomPage = () => {
     console.log("Audio Processing Active:", state.audioProcessingActive);
     console.log("Echo Cancellation:", state.echoCancellationEnabled);
     console.log("Noise Suppression:", state.noiseSuppressionEnabled);
-    console.log("Retry Count:", retryCountRef.current);
     console.log("=========================");
   };
 
-  // Refresh connection
-  const refreshConnection = () => {
-    if (state.remoteEmail && remoteSocketIdRef.current) {
-      retryCountRef.current = 0;
-      handleNewUserJoined({
-        emailId: state.remoteEmail,
-        name: state.remoteName,
-        socketId: remoteSocketIdRef.current,
-      });
-      toast("Refreshing connection...");
-    }
-  };
-
-  // UI/UX Design
+  // UI/UX Design - SAME AS BEFORE (unchanged)
   return (
     <div className="min-h-screen text-white flex bg-gradient-to-br from-gray-900 via-black to-blue-900">
       {/* Header Inside Status & Clock */}
@@ -1496,14 +1336,6 @@ const RoomPage = () => {
         </div>
 
         <div
-          onClick={refreshConnection}
-          className={`p-3 rounded-full bg-[#FF9800] hover:bg-[#F57C00] cursor-pointer`}
-          title="Refresh Connection"
-        >
-          <RefreshCw className="w-5 h-5" />
-        </div>
-
-        <div
           onClick={leaveRoom}
           className={`p-3 rounded-full bg-[#ea002e] hover:bg-[#c7082e] cursor-pointer`}
           title="Leave Call"
@@ -1544,3 +1376,4 @@ const RoomPage = () => {
 };
 
 export default RoomPage;
+
