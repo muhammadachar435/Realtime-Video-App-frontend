@@ -1,22 +1,20 @@
-import { createContext, useContext, useMemo, useEffect, useRef } from "react";
-import { useSocket } from "../providers/Socket";
+import { createContext, useContext, useMemo, useRef } from "react";
 
-const PeerContext = createContext(null);
+const PeerContext = createContext();
 
-export function PeerProvider({ children }) {
-  const { socket } = useSocket();
+export const PeerProvider = ({ children }) => {
   const peerRef = useRef(null);
 
-  const createPeerConnection = () => {
-    // ✅ SIMPLE & RELIABLE ICE SERVERS
-    const iceServers = {
+  const createPeer = () => {
+    // ✅ CRUCIAL: These TURN servers WORK for mobile-to-mobile
+    const configuration = {
       iceServers: [
-        // Free STUN servers
+        // STUN servers
         { urls: "stun:stun.l.google.com:19302" },
         { urls: "stun:stun1.l.google.com:19302" },
         { urls: "stun:stun2.l.google.com:19302" },
         
-        // Free TURN servers that WORK
+        // FREE TURN servers that actually work in 2024
         {
           urls: "turn:openrelay.metered.ca:80",
           username: "openrelayproject",
@@ -26,88 +24,48 @@ export function PeerProvider({ children }) {
           urls: "turn:openrelay.metered.ca:443",
           username: "openrelayproject",
           credential: "openrelayproject"
+        },
+        {
+          urls: "turn:openrelay.metered.ca:443?transport=tcp",
+          username: "openrelayproject",
+          credential: "openrelayproject"
         }
       ],
-      iceCandidatePoolSize: 10
+      iceCandidatePoolSize: 10,
+      iceTransportPolicy: "all"
     };
 
-    const pc = new RTCPeerConnection(iceServers);
-    
-    console.log("✅ PeerConnection created");
+    const peer = new RTCPeerConnection(configuration);
+    peerRef.current = peer;
 
-    // Handle ICE candidates
-    pc.onicecandidate = (event) => {
-      if (event.candidate && socket) {
-        console.log("📤 ICE candidate generated");
-        // We'll send this when we have a remote socket ID
-      }
+    // Log important events
+    peer.oniceconnectionstatechange = () => {
+      console.log("ICE Connection State:", peer.iceConnectionState);
     };
 
-    // Handle connection state
-    pc.onconnectionstatechange = () => {
-      console.log(`Connection state: ${pc.connectionState}`);
+    peer.onconnectionstatechange = () => {
+      console.log("Connection State:", peer.connectionState);
     };
 
-    // Handle ICE connection state
-    pc.oniceconnectionstatechange = () => {
-      console.log(`ICE connection state: ${pc.iceConnectionState}`);
+    peer.onicecandidateerror = (event) => {
+      console.warn("ICE Candidate Error:", event.errorText);
     };
 
-    // Handle when connection is established
-    pc.oniceconnectionstatechange = () => {
-      if (pc.iceConnectionState === "connected") {
-        console.log("🎉 WebRTC connection established!");
-      }
-    };
-
-    // Handle incoming tracks (remote video/audio)
-    pc.ontrack = (event) => {
-      console.log("📹 Remote track received:", event.track.kind);
-      if (event.streams && event.streams[0]) {
-        // This will be handled by the component
-        console.log("✅ Remote stream received with", event.streams[0].getTracks().length, "tracks");
-      }
-    };
-
-    peerRef.current = pc;
-    return pc;
+    console.log("✅ PeerConnection created with TURN servers");
+    return peer;
   };
 
-  const peer = useMemo(() => createPeerConnection(), [socket]);
+  const peer = useMemo(() => createPeer(), []);
 
-  // Send ICE candidate to remote peer
-  const sendIceCandidate = (candidate, remoteSocketId) => {
-    if (socket && remoteSocketId) {
-      socket.emit("ice-candidate", {
-        to: remoteSocketId,
-        candidate: candidate
-      });
-    }
-  };
-
-  // Create offer and set up ICE candidate sending
-  const createOffer = async (remoteSocketId) => {
+  // Create offer
+  const createOffer = async () => {
     try {
-      console.log("Creating offer for:", remoteSocketId);
-      
-      // Set up ICE candidate handler for this specific remote
-      peer.onicecandidate = (event) => {
-        if (event.candidate && socket) {
-          socket.emit("ice-candidate", {
-            to: remoteSocketId,
-            candidate: event.candidate
-          });
-        }
-      };
-
       const offer = await peer.createOffer({
         offerToReceiveAudio: true,
         offerToReceiveVideo: true
       });
-      
       await peer.setLocalDescription(offer);
       console.log("✅ Offer created");
-      
       return offer;
     } catch (error) {
       console.error("❌ Error creating offer:", error);
@@ -116,25 +74,12 @@ export function PeerProvider({ children }) {
   };
 
   // Create answer
-  const createAnswer = async (offer, remoteSocketId) => {
+  const createAnswer = async (offer) => {
     try {
-      console.log("Creating answer");
-      
-      // Set up ICE candidate handler
-      peer.onicecandidate = (event) => {
-        if (event.candidate && socket) {
-          socket.emit("ice-candidate", {
-            to: remoteSocketId,
-            candidate: event.candidate
-          });
-        }
-      };
-
       await peer.setRemoteDescription(new RTCSessionDescription(offer));
       const answer = await peer.createAnswer();
       await peer.setLocalDescription(answer);
       console.log("✅ Answer created");
-      
       return answer;
     } catch (error) {
       console.error("❌ Error creating answer:", error);
@@ -153,19 +98,18 @@ export function PeerProvider({ children }) {
     }
   };
 
-  // Add local stream to peer connection
+  // Add local stream
   const addStream = (stream) => {
-    if (!peer || !stream) return;
+    if (!stream || !peer) return;
     
     // Remove existing tracks
-    const senders = peer.getSenders();
-    senders.forEach(sender => {
+    peer.getSenders().forEach(sender => {
       if (sender.track) {
         peer.removeTrack(sender);
       }
     });
     
-    // Add all tracks from stream
+    // Add new tracks
     stream.getTracks().forEach(track => {
       peer.addTrack(track, stream);
     });
@@ -173,29 +117,57 @@ export function PeerProvider({ children }) {
     console.log(`✅ Added ${stream.getTracks().length} tracks to peer`);
   };
 
-  // Cleanup
-  useEffect(() => {
-    return () => {
-      if (peerRef.current) {
-        peerRef.current.close();
-        console.log("🧹 Peer connection cleaned up");
+  // Handle remote track
+  const onTrack = (callback) => {
+    peer.ontrack = (event) => {
+      if (event.streams && event.streams[0]) {
+        callback(event.streams[0]);
       }
     };
-  }, []);
+  };
+
+  // Send ICE candidate
+  const sendIceCandidate = (socket, candidate, to) => {
+    if (socket && candidate && to) {
+      socket.emit("ice-candidate", { to, candidate });
+    }
+  };
+
+  // Handle incoming ICE candidate
+  const handleIceCandidate = (candidate) => {
+    if (peer.remoteDescription) {
+      peer.addIceCandidate(new RTCIceCandidate(candidate))
+        .then(() => console.log("✅ ICE candidate added"))
+        .catch(err => console.error("❌ Error adding ICE:", err));
+    }
+  };
+
+  // Cleanup
+  const cleanup = () => {
+    if (peerRef.current) {
+      peerRef.current.close();
+      console.log("🧹 Peer connection closed");
+    }
+  };
 
   return (
-    <PeerContext.Provider value={{
-      peer,
-      createOffer,
-      createAnswer,
-      setRemoteAnswer,
-      addStream,
-      sendIceCandidate
-    }}>
+    <PeerContext.Provider
+      value={{
+        peer,
+        createOffer,
+        createAnswer,
+        setRemoteAnswer,
+        addStream,
+        onTrack,
+        sendIceCandidate,
+        handleIceCandidate,
+        cleanup
+      }}
+    >
       {children}
     </PeerContext.Provider>
   );
-}
+};
 
 export const usePeer = () => {
   const context = useContext(PeerContext);
