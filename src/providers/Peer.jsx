@@ -8,128 +8,60 @@ function PeerProvider({ children }) {
   const peerRef = useRef(null);
   const remoteSocketIdRef = useRef(null);
 
-  // In PeerProvider.js, update the peer configuration:
-const peer = useMemo(() => {
-  const pc = new RTCPeerConnection({
-    iceServers: [
-      {
-        urls: [
-          "stun:stun.l.google.com:19302",
-          "stun:global.stun.twilio.com:3478",
-        ],
-      },
-      {
-        urls: "turn:free.expressturn.com:3478",
-        username: "000000002084452952",
-        credential: "aCNpyKTY3wZX1HLTGCh5XvUnyn4="
-      },
-    ],
-    iceCandidatePoolSize: 10,
-    iceTransportPolicy: "all",
-    // Audio echo cancellation ke liye zaroori settings
-    sdpSemantics: 'unified-plan',
-    // Audio processing ke liye experimental settings
-    forceEncodedAudioInsertableStreams: true,
-  });
-
-  // **IMPORTANT: Audio constraints ko enforce karein**
-  const configureAudioTrack = (track) => {
-    if (track.kind === 'audio') {
-      // Detailed audio constraints
-      const constraints = {
-        echoCancellation: { ideal: true },
-        noiseSuppression: { ideal: true },
-        autoGainControl: { ideal: true },
-        // Echo cancellation level
-        echoCancellationType: 'system',
-        // Mono audio reduces echo significantly
-        channelCount: 1,
-        // Sample rate
-        sampleRate: 16000,
-        // Latency optimization
-        latency: 0.01,
-        // Noise suppression level
-        noiseSuppressionLevel: 'high',
-        // Volume normalization
-        autoGainControlLevel: 'adaptive'
-      };
-
-      track.applyConstraints(constraints).catch(err => {
-        console.warn("Audio constraints could not be applied:", err);
-      });
-
-      // Audio context create karein for better processing
-      try {
-        const audioContext = new (window.AudioContext || window.webkitAudioContext)({
-          sampleRate: 16000,
-          latencyHint: 'interactive'
-        });
-        
-        const source = audioContext.createMediaStreamSource(new MediaStream([track]));
-        const destination = audioContext.createMediaStreamDestination();
-        
-        // Noise gate filter
-        const noiseGate = audioContext.createGain();
-        noiseGate.gain.value = 0.1;
-        noiseGate.gain.setValueAtTime(0.1, audioContext.currentTime);
-        
-        source.connect(noiseGate);
-        noiseGate.connect(destination);
-        
-        // Update track with processed audio
-        const processedTrack = destination.stream.getAudioTracks()[0];
-        return processedTrack;
-      } catch (e) {
-        console.log("Web Audio API not available, using default track");
-        return track;
-      }
-    }
-    return track;
-  };
-
-  // Handle track events
-  pc.ontrack = (event) => {
-    console.log("🎵 Remote track received:", event.track.kind);
-    
-    if (event.track.kind === 'audio') {
-      // Remote audio ko process karein
-      const processedTrack = configureAudioTrack(event.track);
-      
-      // Replace original track with processed one
-      const stream = new MediaStream([processedTrack]);
-      
-      // Dispatch event for RoomPage to handle
-      const customEvent = new CustomEvent('processed-track', {
-        detail: { stream, track: processedTrack }
-      });
-      window.dispatchEvent(customEvent);
-    }
-  };
-
-  // Track local audio to prevent echo
-  pc.onnegotiationneeded = async () => {
-    const senders = pc.getSenders();
-    senders.forEach(sender => {
-      if (sender.track && sender.track.kind === 'audio') {
-        configureAudioTrack(sender.track);
-      }
+  const peer = useMemo(() => {
+    const pc = new RTCPeerConnection({
+      iceServers: [
+        // STUN Servers
+        {
+          urls: [
+            "stun:stun.l.google.com:19302",
+            "stun:global.stun.twilio.com:3478",
+            "stun:stun1.l.google.com:19302",
+            "stun:stun2.l.google.com:19302",
+            "stun:stun3.l.google.com:19302",
+            "stun:stun4.l.google.com:19302",
+          ],
+        },
+        // TURN Server 1 (Your ExpressTURN)
+        {
+          urls: "turn:free.expressturn.com:3478",
+          username: "000000002084452952",
+          credential: "aCNpyKTY3wZX1HLTGCh5XvUnyn4=",
+        },
+        // TURN Server 2 (Backup)
+        {
+          urls: "turn:numb.viagenie.ca:3478",
+          username: "webrtc@live.com",
+          credential: "muazkh",
+        },
+      ],
+      iceCandidatePoolSize: 10,
+      iceTransportPolicy: "all",
     });
-  };
 
-  // Enhanced ICE handling
-  pc.onicecandidate = (event) => {
-    if (event.candidate && socket && remoteSocketIdRef.current) {
-      socket.emit("ice-candidate", {
-        to: remoteSocketIdRef.current,
-        candidate: event.candidate,
-      });
-    }
-  };
+    // Handle ICE candidates
+    pc.onicecandidate = (event) => {
+      if (event.candidate && socket && remoteSocketIdRef.current) {
+        socket.emit("ice-candidate", {
+          to: remoteSocketIdRef.current,
+          candidate: event.candidate,
+        });
+      }
+    };
 
-  peerRef.current = pc;
-  return pc;
-}, [socket]);
-  
+    // Handle ICE connection state
+    pc.oniceconnectionstatechange = () => {
+      console.log("ICE Connection State:", pc.iceConnectionState);
+      if (pc.iceConnectionState === "failed") {
+        console.log("ICE failed, restarting ICE...");
+        pc.restartIce();
+      }
+    };
+
+    peerRef.current = pc;
+    return pc;
+  }, [socket]);
+
   // Store remote socket ID
   const setRemoteSocketId = (socketId) => {
     remoteSocketIdRef.current = socketId;
@@ -171,43 +103,27 @@ const peer = useMemo(() => {
     }
   };
 
-  // PeerProvider.js mein
-const sendStream = async (stream) => {
-  try {
-    // Get all current senders
-    const currentSenders = peer.getSenders();
-    
-    stream.getTracks().forEach((track) => {
-      // Check if this track already exists in senders
-      const existingSender = currentSenders.find(
-        sender => sender.track && sender.track.kind === track.kind
-      );
-      
-      if (existingSender) {
-        // Replace track in existing sender
-        existingSender.replaceTrack(track);
-        console.log(`🔄 Replaced ${track.kind} track in existing sender`);
-      } else {
-        // Add new track
+  const sendStream = async (stream) => {
+    try {
+      // Clear existing senders
+      const senders = peer.getSenders();
+      senders.forEach((sender) => {
+        if (sender.track) {
+          peer.removeTrack(sender);
+        }
+      });
+
+      // Add new tracks
+      stream.getTracks().forEach((track) => {
         peer.addTrack(track, stream);
-        console.log(`➕ Added new ${track.kind} track`);
-      }
-    });
+      });
 
-    // Remove any senders that don't have corresponding tracks
-    currentSenders.forEach(sender => {
-      if (sender.track && !stream.getTracks().includes(sender.track)) {
-        peer.removeTrack(sender);
-        console.log(`🗑️ Removed unused ${sender.track?.kind} sender`);
-      }
-    });
-
-    console.log("✅ Stream tracks synchronized with peer connection");
-  } catch (error) {
-    console.error("Error sending stream:", error);
-    throw error;
-  }
-};
+      console.log("✅ Stream tracks added to peer connection");
+    } catch (error) {
+      console.error("Error sending stream:", error);
+      throw error;
+    }
+  };
 
   // Cleanup
   useEffect(() => {
