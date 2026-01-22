@@ -82,19 +82,64 @@ const RoomPage = () => {
 
   // ------------------ ICE Candidates ------------------
   // WebRTC uses ICE candidates to find the best path for connecting peers
-  useEffect(() => {
-    if (!socket) return;
-    const handleIceCandidate = ({ candidate }) => {
-      // If we have a candidate and the remote description is set
-      if (candidate && peer.remoteDescription) {
-        peer.addIceCandidate(new RTCIceCandidate(candidate)).catch(console.error);
+  // ------------------ ICE Candidates ------------------
+useEffect(() => {
+  if (!socket || !peer) return;
+  
+  const handleIceCandidate = async ({ candidate, from }) => {
+    console.log("📥 Received ICE candidate from:", from);
+    
+    if (candidate) {
+      try {
+        // Try to add immediately
+        if (peer.remoteDescription && peer.remoteDescription.type) {
+          await peer.addIceCandidate(new RTCIceCandidate(candidate));
+          console.log("ICE candidate added successfully");
+        } else {
+          // Try again after a delay
+          setTimeout(async () => {
+            if (peer.remoteDescription) {
+              await peer.addIceCandidate(new RTCIceCandidate(candidate));
+              console.log("ICE candidate added (delayed)");
+            }
+          }, 1000);
+        }
+      } catch (err) {
+        console.error("Error adding ICE candidate:", err);
       }
-    };
-    // Listen to "ice-candidate" events from the server
-    socket.on("ice-candidate", handleIceCandidate);
-    return () => socket.off("ice-candidate", handleIceCandidate);
-  }, [socket, peer]);
+    }
+  };
+  
+  socket.on("ice-candidate", handleIceCandidate);
+  
+  return () => {
+    socket.off("ice-candidate", handleIceCandidate);
+  };
+}, [socket, peer]);
 
+// Add this with your other functions
+const retryConnection = useCallback(() => {
+  if (state.remoteEmail && socket) {
+    console.log("🔄 Retrying connection...");
+    
+    // Re-create peer connection
+    if (peer) {
+      peer.close();
+    }
+    
+    // Re-initiate call
+    setTimeout(() => {
+      if (state.remoteEmail && state.remoteName) {
+        handleNewUserJoined({
+          emailId: state.remoteEmail,
+          name: state.remoteName,
+          socketId: remoteSocketIdRef.current
+        });
+      }
+    }, 1000);
+  }
+}, [state.remoteEmail, state.remoteName, socket, peer, handleNewUserJoined]);
+  
   // ------------------ Remote Track ------------------
   useEffect(() => {
     let playTimeout;
@@ -782,6 +827,20 @@ const RoomPage = () => {
         >
           <Share2 className="mr-2 w-5 h-5" />
         </div>
+        // Add this to your bottom control bar
+<button
+  onClick={() => {
+    console.log("🔍 Debug Info:");
+    console.log("- ICE State:", peer?.iceConnectionState);
+    console.log("- Connection State:", peer?.connectionState);
+    console.log("- Remote Stream:", !!remoteStreamRef.current);
+    console.log("- Socket Connected:", socket?.connected);
+    console.log("- Remote Socket ID:", remoteSocketIdRef.current);
+  }}
+  className="p-3 rounded-full bg-purple-600 hover:bg-purple-700 cursor-pointer"
+>
+  🔍 Debug
+</button>
         <div
           onClick={leaveRoom}
           className={`p-3 rounded-full bg-[#ea002e] hover:bg-[#c7082e] gray-800 cursor-pointer`}
