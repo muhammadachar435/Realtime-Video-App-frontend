@@ -1169,6 +1169,7 @@
 // export default RoomPage;
 
 
+
 // Import hooks
 import { useEffect, useCallback, useRef, useReducer, useMemo, useState } from "react";
 
@@ -1275,6 +1276,43 @@ const RoomPage = () => {
 
     return durationText.trim();
   };
+
+  // ------------------ Camera Controls ------------------
+  const toggleCamera = () => {
+    if (!state.myStream) return;
+
+    const newCameraState = !state.cameraOn;
+
+    // enable / disable camera track
+    state.myStream.getVideoTracks().forEach((track) => (track.enabled = newCameraState));
+
+    // update my own state
+    dispatch({ type: "TOGGLE_CAMERA" });
+
+    // send ONLY to other user in room
+    socket.emit("camera-toggle", {
+      cameraOn: newCameraState,
+      roomId,
+    });
+
+    toast(newCameraState ? "Camera ON" : "Camera OFF", {
+      icon: newCameraState ? "📹" : "📵",
+    });
+  };
+
+  // Camera Toggle Listener
+  useEffect(() => {
+    if (!socket) return;
+
+    const handleCameraToggle = ({ cameraOn }) => {
+      console.log("Remote Camera on:", cameraOn);
+      dispatch({ type: "SET_REMOTE_CAMERA", payload: cameraOn });
+    };
+
+    socket.on("camera-toggle", handleCameraToggle);
+
+    return () => socket.off("camera-toggle", handleCameraToggle);
+  }, [socket]);
 
   // ------------------ FIXED: Incoming Call ------------------
   const handleIncomingCall = useCallback(
@@ -1780,6 +1818,115 @@ const RoomPage = () => {
     toast(newMicState ? "🎤 Mic ON" : "🔇 Mic OFF", { duration: 2000 });
   };
 
+  // ------------------ Chat Handle ---------------------
+  const handleChat = () => {
+    dispatch({ type: "SET_CHATCLOSE", payload: !state.chatClose });
+  };
+
+  // ------------------ handle Swipped ----------------------
+  const handleSwipped = () => {
+    dispatch({ type: "SET_IsSWAPPED", payload: !state.isSwapped });
+  };
+
+  // ------------------ handleRemoteVideoRead ---------------------
+  const handleRemoteVideoReady = () => {
+    dispatch({ type: "SET_REMOTEVIDEOREADY", payload: true });
+
+    if (!state.isCallActive) {
+      dispatch({ type: "START_CALL" });
+    }
+    
+    console.log("✅ Remote video ready, call started");
+  };
+
+  // ------------------ Copy Meeting Link ------------------
+  const copyMeetingLink = async () => {
+    const link = `${window.location.origin}/room/${roomId}`;
+    
+    const message = `📹 Join my video meeting on MeetNow\n\n🔑 Room ID: ${roomId}\n🔗 Link: ${link}\n🌐 Live on: ${window.location.origin}`;
+
+    try {
+      await navigator.clipboard.writeText(message);
+      toast.success("Meeting link copied!", { 
+        icon: "🔗",
+        autoClose: 500 
+      });
+    } catch {
+      const textArea = document.createElement("textarea");
+      textArea.value = message;
+      document.body.appendChild(textArea);
+      textArea.select();
+      document.execCommand("copy");
+      document.body.removeChild(textArea);
+      toast.success("Meeting link copied!", { 
+        icon: "🔗",
+        autoClose: 500 
+      });
+    }
+  };
+
+  // ------------------ Leave Room ------------------
+  const leaveRoom = () => {
+    const callDuration = getCallDurationText();
+
+    if (state.isCallActive) {
+      toast.success(`Call ended. Duration: ${callDuration}`, {
+        duration: 5000,
+        icon: "📞",
+        style: {
+          background: "#1e293b",
+          color: "#fff",
+          padding: "16px",
+          borderRadius: "8px",
+        },
+      });
+    } else {
+      toast.success("Left the room", { 
+        icon: "👋",
+        autoClose: 500 
+      });
+    }
+
+    // Stop all local tracks
+    if (state.myStream) {
+      state.myStream.getTracks().forEach((track) => track.stop());
+      console.log("🛑 Local media tracks stopped");
+    }
+
+    // Reset remote video
+    if (remoteVideoRef.current) {
+      if (remoteVideoRef.current.srcObject) {
+        remoteVideoRef.current.srcObject.getTracks().forEach((t) => t.stop());
+      }
+      remoteVideoRef.current.srcObject = null;
+    }
+
+    // Reset local video
+    if (myVideoRef.current) {
+      myVideoRef.current.srcObject = null;
+    }
+
+    // Reset peer connection
+    if (peer) {
+      peer.close();
+      console.log("🛑 Peer connection closed");
+    }
+
+    // Reset call timer
+    dispatch({ type: "END_CALL" });
+
+    // Notify server you left
+    if (socket && roomId) {
+      socket.emit("leave-room", { roomId });
+      console.log("📤 Leave room notification sent");
+    }
+
+    // Redirect after a short delay to allow toast to show
+    setTimeout(() => {
+      window.location.href = "/";
+    }, 1000);
+  };
+
   // ------------------ Socket Events ------------------
   useEffect(() => {
     if (!socket) return;
@@ -1881,50 +2028,132 @@ const RoomPage = () => {
       {/* Video Capture */}
       <div className="relative w-screen py-2 mt-17 sm:mt-14">
         {/* REMOTE VIDEO */}
-        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 inset-0 w-full xl:max-w-4xl h-[95%] z-10 rounded-md bg-[#0d1321]">
+        <div
+          onClick={handleSwipped}
+          className={`absolute transition-all duration-300 rounded-md bg-[#0d1321]
+      ${state.isSwapped ? "top-4 right-4 w-56 sm:w-56 h-36 z-20 shadow-2xl" : "top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 inset-0 w-full xl:max-w-4xl h-[95%] z-10"}
+    `}
+        >
           <video
             ref={remoteVideoRef}
             autoPlay
             playsInline
-            className="w-full h-full object-cover shadow-2xl rounded-md bg-[#0d1321]"
+            onCanPlay={handleRemoteVideoReady}
+            className={`w-full h-full object-cover shadow-2xl rounded-md bg-[#0d1321] ${state.remoteCameraOn ? "block" : "hidden"} `}
           />
 
-          {state.remoteName && (
+          {(remoteStreamRef.current || state.remoteEmail) && (
             <span className="absolute top-2 left-2 z-40 font-sans font-semibold bg-green-700 px-3 py-1 text-sm rounded-full">
               {state.remoteName}
             </span>
           )}
 
-          {!state.remoteVideoReady && (
-            <div className="absolute inset-0 flex flex-col items-center justify-center z-40">
-              <CircleAlert className="w-12 h-12 text-yellow-500 mb-4" />
-              <span className="text-lg text-center">
-                {state.connectionState === 'connecting' ? 'Connecting...' : 'Waiting for participant'}
+          {/* Overlay when camera is off */}
+          {!state.remoteCameraOn && state.remoteName && (
+            <div className="absolute inset-0 flex items-center justify-center z-40">
+              <span className="flex items-center justify-center w-18 h-18 rounded-full bg-blue-700 text-white text-4xl sm:text-5xl font-semibold shadow-lg">
+                {state.remoteName ? state.remoteName.charAt(0).toUpperCase() : ""}
               </span>
-              {state.isMobileDevice && (
-                <span className="text-sm text-gray-400 mt-2">
-                  For best audio quality, use headphones
-                </span>
-              )}
             </div>
+          )}
+
+          {/* status */}
+          {!state.remoteVideoReady && (
+            <span className="absolute top-4 left-2 z-40 font-sans font-semibold bg-[#931cfb] px-3 py-1 text-sm rounded-full">
+              Waiting for participants... {state.remoteCameraOn}
+            </span>
+          )}
+
+          {/* Waiting */}
+          {!state.remoteVideoReady && !state.isSwapped && (
+            <span className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-40 font-sans text-lg text-center">
+              <CircleAlert className="text-center mx-auto my-2 w-10 h-10 text-yellow-600" />
+              Share the meeting Link to invite others
+            </span>
           )}
         </div>
 
         {/* MY VIDEO */}
-        <div className="absolute top-4 right-4 w-56 sm:w-56 h-36 z-20 shadow-2xl bg-gray-800 rounded-md">
+        <div
+          onClick={handleSwipped}
+          className={`absolute transition-all duration-300 rounded-md bg-[#0d1321]
+      ${state.isSwapped ? "top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 inset-0 w-full xl:max-w-4xl h-[95%] z-10" : "top-4 right-4 w-56 sm:w-56 h-36 z-20 shadow-2xl bg-gray-800"}
+    `}
+        >
           <video
             ref={myVideoRef}
             autoPlay
             playsInline
             muted
-            className="w-full h-full rounded-md object-cover"
+            className={`w-full h-full rounded-md object-cover shadow-2xl bg-[#0d1321] ${state.cameraOn ? "block" : "hidden"} `}
           />
 
+          {/* Local Video User A Name */}
           <span className="absolute top-2 left-2 z-40 font-sans font-semibold bg-green-700 px-3 py-1 text-sm rounded-full">
-            {state.myName} {state.isMobileDevice ? '(Mobile)' : ''}
+            {state.myName}
           </span>
+
+          {!state.cameraOn && (
+            <div className="absolute inset-0 flex items-center justify-center z-40">
+              <span className="flex items-center justify-center w-18 h-18 rounded-full bg-blue-700 text-white text-4xl sm:text-5xl font-semibold shadow-lg">
+                {state.myName.charAt(0).toUpperCase()}
+              </span>
+            </div>
+          )}
         </div>
       </div>
+
+      {/* Chat Content */}
+      {state.chatClose && (
+        <div className="absolute top-0 right-0 h-full w-80 sm:96 bg-gray-900/95 backdrop-blur-xl border-l border-gray-800 z-50 flex flex-col">
+          <div className="p-4 border-b border-gray-800 flex justify-between items-center">
+            <h3 className="text-lg font-semibold">Chat</h3>
+            <button
+              onClick={handleChat}
+              className="p-2 hover:bg-gray-800 rounded-full transition-colors"
+            >
+              <X size={20} />
+            </button>
+          </div>
+
+          <div className="flex-1 p-4 overflow-y-auto space-y-4">
+            {state.messages.map((msg, idx) => {
+              const isMe = msg.from === socket?.id;
+              return (
+                <div key={idx} className={`flex ${isMe ? "justify-end" : "justify-start"}`}>
+                  <div
+                    className={`max-w-[70%] rounded-2xl px-4 py-2 ${isMe ? "bg-gradient-to-r from-blue-600 to-indigo-600" : "bg-gray-800"}`}
+                  >
+                    <div className="text-xs opacity-75 mb-1">
+                      {isMe ? state.myName : state.remoteName} • {msg.timestamp || "Just now"}
+                    </div>
+                    <div className="text-sm">{msg.text}</div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="p-4 border-t border-gray-800">
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={state.messageText}
+                onChange={(e) => dispatch({ type: "SET_MESSAGE_TEXT", payload: e.target.value })}
+                onKeyPress={(e) => e.key === "Enter" && sendMessage()}
+                placeholder="Type a message..."
+                className="flex-1 bg-gray-800 rounded-full px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              <button
+                onClick={sendMessage}
+                className="bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 px-6 rounded-full font-medium transition-all duration-300"
+              >
+                Send
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Connection Status Banner */}
       {state.connectionState === 'connecting' && (
@@ -1952,32 +2181,33 @@ const RoomPage = () => {
         </div>
       )}
 
+      {/* Leave when display message */}
+      <Toaster position="top-right" reverseOrder={false} />
+
       {/* BOTTOM CONTROL BAR */}
-      <div className="fixed flex flex-wrap w-full max-w-92 sm:max-w-xl justify-center place-items-center gap-2.5 sm:gap-4 bottom-6 left-1/2 z-10 -translate-x-1/2 bg-[#0b1018] backdrop-blur-lg sm:px-2 py-3 rounded-xl shadow-lg">
+      <div className="fixed flex flex-wrap w-full max-w-92 sm:max-w-md justify-center place-items-center gap-2.5 sm:gap-4 bottom-6 left-1/2 z-10 -translate-x-1/2 bg-[#0b1018] backdrop-blur-lg sm:px-2 py-3 rounded-xl shadow-lg">
         <div
           onClick={toggleCamera}
-          className={`p-3 rounded-full ${state.cameraOn ? 'bg-gray-900' : 'bg-[#364355]'} hover:bg-[#2e4361] cursor-pointer`}
-          title="Toggle Camera"
+          className={`p-3 rounded-full bg-[#364355] hover:bg-[#2e4361] cursor-pointer ${state.cameraOn ? "bg-gray-900" : ""} `}
         >
           {state.cameraOn ? <Camera /> : <CameraOff />}
         </div>
 
         <div
           onClick={toggleMic}
-          className={`p-3 rounded-full ${state.micOn ? 'bg-gray-900' : 'bg-[#364355]'} hover:bg-[#2e4361] cursor-pointer`}
-          title="Toggle Microphone"
+          className={`p-3 rounded-full bg-[#364355] hover:bg-[#2e4361] cursor-pointer ${state.micOn ? "bg-gray-900" : ""} `}
         >
           {state.micOn ? <Mic /> : <MicOff />}
         </div>
 
         <div
           onClick={toggleHandfree}
-          className={`p-3 rounded-full ${state.speakerMode ? 'bg-yellow-700' : 'bg-[#364355]'} hover:bg-[#2e4361] cursor-pointer`}
-          title={state.speakerMode ? "Switch to Headphones" : "Switch to Speaker"}
+          className={`p-3 rounded-full bg-[#364355] hover:bg-[#2e4361] cursor-pointer ${state.speakerMode ? "bg-gray-900" : ""} `}
         >
-          {state.speakerMode ? <Volume2 /> : <Headphones />}
+          {state.speakerMode ? <Headphones /> : <Volume2 />}
         </div>
 
+        {/* Enhanced Audio Controls */}
         <div
           onClick={() => toggleEchoCancellation()}
           className={`p-3 rounded-full ${state.echoCancellationEnabled ? 'bg-green-700' : 'bg-[#364355]'} hover:bg-[#2e4361] cursor-pointer`}
@@ -1998,45 +2228,28 @@ const RoomPage = () => {
         </div>
 
         <div
-          onClick={() => dispatch({ type: "SET_CHATCLOSE", payload: !state.chatClose })}
-          className={`p-3 rounded-full ${state.chatClose ? 'bg-gray-900' : 'bg-[#364355]'} hover:bg-[#2e4361] cursor-pointer`}
-          title="Toggle Chat"
+          onClick={handleChat}
+          className={`relative p-3 rounded-full bg-[#364355] hover:bg-[#2e4361] cursor-pointer ${state.chatClose ? "bg-gray-900" : ""} `}
         >
           {state.chatClose ? <MessageSquareText /> : <MessageSquareOff />}
         </div>
 
         <div
-          onClick={async () => {
-            const link = `${window.location.origin}/room/${roomId}`;
-            const message = `Join my meeting: ${link}`;
-            try {
-              await navigator.clipboard.writeText(message);
-              toast.success("Meeting link copied!");
-            } catch {
-              toast.success("Meeting link copied!");
-            }
-          }}
-          className="p-3 rounded-full bg-[#009776] hover:bg-[#048166] cursor-pointer"
-          title="Share Meeting Link"
+          onClick={copyMeetingLink}
+          className={`p-3 rounded-full bg-[#009776] hover:bg-[#048166] cursor-pointer`}
         >
-          <Share2 className="w-5 h-5" />
+          <Share2 className="mr-2 w-5 h-5" />
         </div>
-        
         <div
           onClick={leaveRoom}
-          className="p-3 rounded-full bg-[#ea002e] hover:bg-[#c7082e] cursor-pointer"
-          title="Leave Call"
+          className={`p-3 rounded-full bg-[#ea002e] hover:bg-[#c7082e] gray-800 cursor-pointer`}
         >
-          <PhoneOff className="w-5 h-5" />
+          <PhoneOff />
         </div>
       </div>
-
-      <Toaster position="top-right" reverseOrder={false} />
     </div>
   );
 };
 
 export default RoomPage;
-
-
 
