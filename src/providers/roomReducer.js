@@ -1,4 +1,4 @@
-// roomReducer.js
+// initialState
 export const initialState = {
   myStream: null,
   remoteStream: null,
