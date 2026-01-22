@@ -1,4 +1,4 @@
-import { createContext, useContext, useMemo, useEffect, useRef } from "react";
+import { createContext, useContext, useMemo, useEffect, useRef, useState } from "react";
 import { useSocket } from "../providers/Socket";
 
 const peerContext = createContext(null);
@@ -7,36 +7,27 @@ function PeerProvider({ children }) {
   const { socket } = useSocket();
   const peerRef = useRef(null);
   const remoteSocketIdRef = useRef(null);
+  const [isNegotiating, setIsNegotiating] = useState(false);
 
   const peer = useMemo(() => {
     const pc = new RTCPeerConnection({
       iceServers: [
-        // STUN Servers
         {
           urls: [
             "stun:stun.l.google.com:19302",
             "stun:global.stun.twilio.com:3478",
-            "stun:stun1.l.google.com:19302",
-            "stun:stun2.l.google.com:19302",
-            "stun:stun3.l.google.com:19302",
-            "stun:stun4.l.google.com:19302",
           ],
         },
-        // TURN Server 1 (Your ExpressTURN)
         {
           urls: "turn:free.expressturn.com:3478",
           username: "000000002084452952",
           credential: "aCNpyKTY3wZX1HLTGCh5XvUnyn4=",
         },
-        // TURN Server 2 (Backup)
-        {
-          urls: "turn:numb.viagenie.ca:3478",
-          username: "webrtc@live.com",
-          credential: "muazkh",
-        },
       ],
-      iceCandidatePoolSize: 10,
+      iceCandidatePoolSize: 5,
       iceTransportPolicy: "all",
+      bundlePolicy: "max-bundle",
+      rtcpMuxPolicy: "require",
     });
 
     // Handle ICE candidates
@@ -52,15 +43,44 @@ function PeerProvider({ children }) {
     // Handle ICE connection state
     pc.oniceconnectionstatechange = () => {
       console.log("ICE Connection State:", pc.iceConnectionState);
-      if (pc.iceConnectionState === "failed") {
-        console.log("ICE failed, restarting ICE...");
+      if (pc.iceConnectionState === "failed" || pc.iceConnectionState === "disconnected") {
+        console.log("ICE failed/disconnected, restarting ICE...");
         pc.restartIce();
       }
     };
 
+    // Handle negotiation needed
+    pc.onnegotiationneeded = async () => {
+      if (isNegotiating) return;
+      setIsNegotiating(true);
+      try {
+        const offer = await pc.createOffer({
+          offerToReceiveAudio: true,
+          offerToReceiveVideo: true,
+        });
+        await pc.setLocalDescription(offer);
+        
+        if (socket && remoteSocketIdRef.current) {
+          socket.emit("renegotiate", {
+            to: remoteSocketIdRef.current,
+            offer: offer,
+          });
+        }
+      } catch (err) {
+        console.error("Negotiation error:", err);
+      } finally {
+        setIsNegotiating(false);
+      }
+    };
+
+    // Handle track events
+    pc.ontrack = (event) => {
+      console.log("Track received:", event.streams.length, "stream(s)");
+    };
+
     peerRef.current = pc;
     return pc;
-  }, [socket]);
+  }, [socket, isNegotiating]);
 
   // Store remote socket ID
   const setRemoteSocketId = (socketId) => {
@@ -73,6 +93,7 @@ function PeerProvider({ children }) {
       const offer = await peer.createOffer({
         offerToReceiveAudio: true,
         offerToReceiveVideo: true,
+        iceRestart: true
       });
       await peer.setLocalDescription(offer);
       return offer;
@@ -103,38 +124,57 @@ function PeerProvider({ children }) {
     }
   };
 
- const sendStream = async (stream) => {
+  const sendStream = async (stream) => {
     try {
-      // Clear existing senders
-      const senders = peer.getSenders();
-      senders.forEach((sender) => {
+      // First, remove only existing tracks of the same type
+      const existingSenders = peer.getSenders();
+      
+      // Get track types from new stream
+      const newVideoTrack = stream.getVideoTracks()[0];
+      const newAudioTrack = stream.getAudioTracks()[0];
+      
+      // Replace existing tracks with new ones
+      existingSenders.forEach((sender) => {
         if (sender.track) {
-          peer.removeTrack(sender);
+          if (sender.track.kind === 'video' && newVideoTrack) {
+            sender.replaceTrack(newVideoTrack);
+          } else if (sender.track.kind === 'audio' && newAudioTrack) {
+            sender.replaceTrack(newAudioTrack);
+          }
         }
       });
 
-      // Add new tracks
-      stream.getTracks().forEach((track) => {
-        peer.addTrack(track, stream);
-      });
+      // Add new tracks if no existing sender
+      if (newVideoTrack && !existingSenders.find(s => s.track?.kind === 'video')) {
+        peer.addTrack(newVideoTrack, stream);
+      }
+      
+      if (newAudioTrack && !existingSenders.find(s => s.track?.kind === 'audio')) {
+        peer.addTrack(newAudioTrack, stream);
+      }
 
-      console.log("✅ Stream tracks added to peer connection");
+      console.log("✅ Stream tracks updated in peer connection");
     } catch (error) {
       console.error("Error sending stream:", error);
       throw error;
     }
   };
 
+  const cleanup = () => {
+    if (peerRef.current) {
+      peerRef.current.getSenders().forEach(sender => {
+        if (sender.track) {
+          sender.track.stop();
+        }
+      });
+      peerRef.current.close();
+    }
+  };
 
-  
   // Cleanup
   useEffect(() => {
-    return () => {
-      if (peer) {
-        peer.close();
-      }
-    };
-  }, [peer]);
+    return cleanup;
+  }, []);
 
   return (
     <peerContext.Provider
@@ -145,6 +185,7 @@ function PeerProvider({ children }) {
         setRemoteAns,
         sendStream,
         setRemoteSocketId,
+        cleanup
       }}
     >
       {children}
