@@ -158,38 +158,117 @@ const RoomPage = () => {
   }, [socket, peer]);
 
   // ------------------ Remote Track ------------------
-  useEffect(() => {
-    let playTimeout;
+// ------------------ Remote Track ------------------
+useEffect(() => {
+  let playTimeout;
+  let retryCount = 0;
+  const MAX_RETRIES = 3;
 
-    // handleTrackEvent
-    const handleTrackEvent = (event) => {
-      if (event.streams && event.streams[0]) {
-        remoteStreamRef.current = event.streams[0];
+  // handleTrackEvent
+  const handleTrackEvent = (event) => {
+    console.log("🎬 Track event received:", event);
+    
+    if (event.streams && event.streams[0]) {
+      remoteStreamRef.current = event.streams[0];
+      console.log("📹 Remote stream received with tracks:", 
+        event.streams[0].getTracks().map(t => `${t.kind}:${t.id}`)
+      );
 
-        if (remoteVideoRef.current) {
-          remoteVideoRef.current.srcObject = remoteStreamRef.current;
+      if (remoteVideoRef.current) {
+        console.log("🔄 Attaching remote stream to video element");
+        remoteVideoRef.current.srcObject = remoteStreamRef.current;
 
-          // Small delay to avoid AbortError
-          clearTimeout(playTimeout);
-          playTimeout = setTimeout(() => {
-            // Only play if paused
-            if (remoteVideoRef.current.paused) {
-              remoteVideoRef.current.play().catch((err) => {
-                if (err.name !== "AbortError") console.error("❌ Error playing remote video:", err);
-              });
-            }
-          }, 50); // 50ms delay is enough
-        }
+        // Small delay to avoid AbortError
+        clearTimeout(playTimeout);
+        playTimeout = setTimeout(() => {
+          // Try to play the video
+          const playPromise = remoteVideoRef.current.play();
+          
+          if (playPromise !== undefined) {
+            playPromise.then(() => {
+              console.log("✅ Remote video playing successfully");
+              dispatch({ type: "SET_REMOTEVIDEOREADY", payload: true });
+            }).catch((err) => {
+              console.error("❌ Error playing remote video:", err);
+              
+              // Retry playing if failed
+              if (retryCount < MAX_RETRIES) {
+                retryCount++;
+                console.log(`🔄 Retrying play (${retryCount}/${MAX_RETRIES})...`);
+                setTimeout(() => {
+                  remoteVideoRef.current.play().catch(e => {
+                    console.error(`❌ Retry ${retryCount} failed:`, e);
+                  });
+                }, 500);
+              }
+            });
+          }
+        }, 100); // Increased delay to 100ms
       }
-    };
+    }
+  };
 
-    peer.addEventListener("track", handleTrackEvent);
-    return () => {
-      peer.removeEventListener("track", handleTrackEvent);
-      clearTimeout(playTimeout);
-    };
-  }, [peer]);
+  // Also listen for addstream event (older browsers)
+  const handleAddStream = (event) => {
+    console.log("📹 AddStream event:", event);
+    if (event.stream) {
+      remoteStreamRef.current = event.stream;
+      if (remoteVideoRef.current) {
+        remoteVideoRef.current.srcObject = event.stream;
+      }
+    }
+  };
 
+  peer.addEventListener("track", handleTrackEvent);
+  peer.addEventListener("addstream", handleAddStream); // For compatibility
+
+  return () => {
+    peer.removeEventListener("track", handleTrackEvent);
+    peer.removeEventListener("addstream", handleAddStream);
+    clearTimeout(playTimeout);
+  };
+}, [peer, dispatch]);
+
+  // ------------------ Force Video Playback ------------------
+useEffect(() => {
+  if (!remoteVideoRef.current || !remoteStreamRef.current) return;
+
+  const forcePlayVideo = () => {
+    if (remoteVideoRef.current && remoteStreamRef.current) {
+      console.log("🚀 Force playing remote video...");
+      
+      // Ensure srcObject is set
+      if (remoteVideoRef.current.srcObject !== remoteStreamRef.current) {
+        remoteVideoRef.current.srcObject = remoteStreamRef.current;
+      }
+      
+      // Try to play
+      remoteVideoRef.current.play().then(() => {
+        console.log("✅ Force play successful");
+        dispatch({ type: "SET_REMOTEVIDEOREADY", payload: true });
+      }).catch(err => {
+        console.error("❌ Force play failed:", err);
+      });
+    }
+  };
+
+  // Try immediately
+  forcePlayVideo();
+  
+  // Try again after 1 second
+  const timeout1 = setTimeout(forcePlayVideo, 1000);
+  
+  // Try again after 2 seconds
+  const timeout2 = setTimeout(forcePlayVideo, 2000);
+
+  return () => {
+    clearTimeout(timeout1);
+    clearTimeout(timeout2);
+  };
+}, [remoteStreamRef.current]); // Re-run when remote stream changes
+
+  
+  
   // ------------------ New User Joined ------------------
   const handleNewUserJoined = useCallback(
     async ({ emailId, name, socketId }) => {
@@ -621,17 +700,32 @@ const RoomPage = () => {
     dispatch({ type: "SET_IsSWAPPED", payload: !state.isSwapped });
   };
 
-  //  ----------------- handleRemoteVideoRead ---------------------
-  const handleRemoteVideoReady = () => {
+  //  ----------------- handleRemoteVideoReady ---------------------
+const handleRemoteVideoReady = () => {
+  console.log("✅ Video canPlay event fired");
+  
+  // Try to play if not already playing
+  if (remoteVideoRef.current && remoteVideoRef.current.paused) {
+    remoteVideoRef.current.play().then(() => {
+      console.log("✅ Remote video started playing from canPlay event");
+      dispatch({ type: "SET_REMOTEVIDEOREADY", payload: true });
+      
+      // Start call timer if not already started
+      if (!state.isCallActive) {
+        dispatch({ type: "START_CALL" });
+      }
+    }).catch(err => {
+      console.error("❌ Failed to play from canPlay event:", err);
+    });
+  } else {
     dispatch({ type: "SET_REMOTEVIDEOREADY", payload: true });
-
+    
     // Start call timer if not already started
     if (!state.isCallActive) {
       dispatch({ type: "START_CALL" });
     }
-    
-    console.log("✅ Remote video ready, call started");
-  };
+  }
+};
 
   // ------------------ Chat ------------------
   // Sends a chat message to the room and updates local chat state
@@ -789,13 +883,22 @@ const RoomPage = () => {
       ${state.isSwapped ? "top-4 right-4 w-56 sm:w-56 h-36 z-20 shadow-2xl" : "top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 inset-0 w-full xl:max-w-4xl h-[95%] z-10"}
     `}
         >
-          <video
-            ref={remoteVideoRef}
-            autoPlay
-            playsInline
-            onCanPlay={handleRemoteVideoReady}
-            className={`w-full h-full object-cover shadow-2xl rounded-md bg-[#0d1321] ${state.remoteCameraOn ? "block" : "hidden"} `}
-          />
+         // In the REMOTE VIDEO section, update the video element:
+<video
+  ref={remoteVideoRef}
+  autoPlay
+  playsInline
+  onCanPlay={handleRemoteVideoReady}
+  onLoadedMetadata={() => console.log("📹 Remote video metadata loaded")}
+  onLoadedData={() => console.log("📹 Remote video data loaded")}
+  onPlaying={() => {
+    console.log("▶️ Remote video is playing");
+    dispatch({ type: "SET_REMOTEVIDEOREADY", payload: true });
+  }}
+  onStalled={() => console.log("⚠️ Remote video stalled")}
+  onError={(e) => console.error("❌ Remote video error:", e.target.error)}
+  className={`w-full h-full object-cover shadow-2xl rounded-md bg-[#0d1321] ${state.remoteCameraOn ? "block" : "hidden"} `}
+/>
 
           {(remoteStreamRef.current || state.remoteEmail) && (
             <span className="absolute top-2 left-2 z-40 font-sans font-semibold bg-green-700 px-3 py-1 text-sm rounded-full">
