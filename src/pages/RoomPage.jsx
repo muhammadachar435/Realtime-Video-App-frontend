@@ -43,16 +43,17 @@ const RoomPage = () => {
   // RoomID
   const { roomId } = useParams();
 
-  // useReducer with enhanced initialState
-  const enhancedInitialState = {
+  // Enhanced initialState
+  const enhancedInitialState = useMemo(() => ({
     ...initialState,
     echoCancellationEnabled: true,
     noiseSuppressionEnabled: true,
     audioDevices: [],
     selectedAudioDevice: null,
     audioProcessingActive: true
-  };
+  }), []);
 
+  // useReducer
   const [state, dispatch] = useReducer(roomReducer, enhancedInitialState);
 
   // useRef
@@ -68,6 +69,215 @@ const RoomPage = () => {
 
   // totalUsers
   const totalUsers = useMemo(() => (state.remoteName ? 2 : 1), [state.remoteName]);
+
+  // ------------------ Helper Functions ------------------
+  const getCallDurationText = () => {
+    if (!state.callStartTime) return "0 seconds";
+
+    const now = Date.now();
+    const elapsed = now - state.callStartTime;
+
+    const hours = Math.floor(elapsed / (1000 * 60 * 60));
+    const minutes = Math.floor((elapsed % (1000 * 60 * 60)) / (1000 * 60));
+    const seconds = Math.floor((elapsed % (1000 * 60)) / 1000);
+
+    let durationText = "";
+    if (hours > 0) {
+      durationText += `${hours} hour${hours > 1 ? "s" : ""}`;
+      if (minutes > 0) durationText += ` ${minutes} minute${minutes > 1 ? "s" : ""}`;
+    } else if (minutes > 0) {
+      durationText += `${minutes} minute${minutes > 1 ? "s" : ""}`;
+      if (seconds > 0 && minutes < 5) durationText += ` ${seconds} second${seconds > 1 ? "s" : ""}`;
+    } else {
+      durationText += `${seconds} second${seconds > 1 ? "s" : ""}`;
+    }
+
+    return durationText.trim();
+  };
+
+  // ------------------ Incoming Call ------------------
+  const handleIncomingCall = useCallback(
+    async ({ from, offer, fromName }) => {
+      dispatch({ type: "SET_REMOTE_EMAIL", payload: from });
+      dispatch({ type: "SET_REMOTE_NAME", payload: fromName });
+      
+      // Store remote socket ID
+      remoteSocketIdRef.current = from;
+      if (setRemoteSocketId) {
+        setRemoteSocketId(from);
+      }
+      console.log("📲 Incoming call from socket ID:", from);
+
+      if (!state.streamReady) {
+        pendingIncomingCall.current = { from, offer, fromName };
+        console.log("⏳ Stream not ready, incoming call pending...");
+        return;
+      }
+
+      try {
+        console.log("📝 Creating answer for:", from);
+        const answer = await createAnswer(offer);
+        socket.emit("call-accepted", { 
+          to: from, 
+          ans: answer 
+        });
+        console.log("📨 Answer sent to:", from);
+      } catch (err) {
+        console.error("❌ Error creating answer:", err);
+      }
+    },
+    [createAnswer, socket, state.streamReady, setRemoteSocketId],
+  );
+
+  // ------------------ New User Joined ------------------
+  const handleNewUserJoined = useCallback(
+    async ({ emailId, name, socketId }) => {
+      // ALWAYS set remote name immediately
+      dispatch({ type: "SET_REMOTE_EMAIL", payload: emailId });
+      dispatch({ type: "SET_REMOTE_NAME", payload: name });
+      
+      // Store remote socket ID for ICE candidates
+      remoteSocketIdRef.current = socketId;
+      if (setRemoteSocketId) {
+        setRemoteSocketId(socketId);
+      }
+      console.log("✅ Remote socket ID stored:", socketId);
+
+      // Store pending call if stream is not ready
+      if (!state.streamReady) {
+        pendingIncomingCall.current = { fromEmail: emailId, fromName: name, socketId };
+        console.log("⏳ Stream not ready, call pending...");
+        return;
+      }
+
+      try {
+        console.log("📞 Creating offer for:", emailId);
+        const offer = await createOffer();
+        socket.emit("call-user", { 
+          emailId, 
+          offer,
+          socketId: socketId
+        });
+        console.log("📨 Offer sent to:", emailId);
+      } catch (err) {
+        console.error("❌ Error creating offer:", err);
+      }
+    },
+    [createOffer, socket, state.streamReady, setRemoteSocketId],
+  );
+
+  // ------------------ Call Accepted ------------------
+  const handleCallAccepted = useCallback(
+    async ({ ans }) => {
+      try {
+        console.log("✅ Setting remote answer");
+        await setRemoteAns(ans);
+        console.log("✅ Remote answer set successfully");
+      } catch (err) {
+        console.error("❌ Error setting remote answer:", err);
+      }
+    },
+    [setRemoteAns],
+  );
+
+  // ------------------ Local Media ------------------
+  const getUserMediaStream = useCallback(async () => {
+    try {
+      console.log("🎥 Requesting camera and microphone access...");
+      
+      // Enhanced audio constraints for echo cancellation
+      const constraints = {
+        video: { 
+          width: { ideal: 1280 }, 
+          height: { ideal: 720 }, 
+          frameRate: { ideal: 30 },
+          facingMode: "user"
+        },
+        audio: { 
+          // Advanced echo cancellation settings
+          echoCancellation: { ideal: true },
+          noiseSuppression: { ideal: true },
+          autoGainControl: { ideal: true },
+          // Specific codec preferences
+          channelCount: 1, // Mono - reduces echo
+          sampleRate: 16000, // Optimized for voice
+          // Device selection
+          deviceId: undefined, // Let browser choose best
+          // Advanced features
+          googEchoCancellation: true,
+          googNoiseSuppression: true,
+          googAutoGainControl: true,
+          googHighpassFilter: true
+        }
+      };
+
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+
+      // Verify audio quality
+      const audioTracks = stream.getAudioTracks();
+      audioTracks.forEach(track => {
+        const settings = track.getSettings();
+        console.log("🔊 Audio settings after getUserMedia:", settings);
+        
+        // Apply additional constraints if needed
+        track.applyConstraints({
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          channelCount: 1
+        }).catch(err => {
+          console.warn("Could not apply audio constraints:", err);
+        });
+      });
+
+      console.log("✅ Media devices accessed successfully");
+      dispatch({ type: "SET_MY_STREAM", payload: stream });
+      
+      if (myVideoRef.current) {
+        myVideoRef.current.srcObject = stream;
+        console.log("✅ Local video stream attached");
+      }
+      
+      await sendStream(stream);
+      dispatch({ type: "SET_STREAM_READY", payload: true });
+      dispatch({ type: "SET_AUDIO_PROCESSING_ACTIVE", payload: true });
+      console.log("✅ Stream ready for WebRTC");
+
+      // Handle pending incoming call automatically
+      if (pendingIncomingCall.current) {
+        console.log("🔄 Processing pending incoming call...");
+        handleIncomingCall(pendingIncomingCall.current);
+        pendingIncomingCall.current = null;
+      }
+    } catch (err) {
+      console.error("❌ Error accessing media devices:", err);
+      
+      // Fallback to simpler constraints
+      if (err.name === 'OverconstrainedError' || err.name === 'ConstraintNotSatisfiedError') {
+        try {
+          console.log("🔄 Trying fallback constraints...");
+          const fallbackStream = await navigator.mediaDevices.getUserMedia({
+            video: true,
+            audio: {
+              echoCancellation: true,
+              noiseSuppression: true,
+              autoGainControl: true
+            }
+          });
+          
+          dispatch({ type: "SET_MY_STREAM", payload: fallbackStream });
+          await sendStream(fallbackStream);
+          dispatch({ type: "SET_STREAM_READY", payload: true });
+          dispatch({ type: "SET_AUDIO_PROCESSING_ACTIVE", payload: true });
+        } catch (fallbackErr) {
+          console.error("Fallback also failed:", fallbackErr);
+          toast.error("Please allow camera and microphone access");
+        }
+      } else {
+        toast.error("Failed to access camera/microphone");
+      }
+    }
+  }, [sendStream, handleIncomingCall]);
 
   // ------------------ Audio Processing ------------------
   useEffect(() => {
@@ -176,132 +386,10 @@ const RoomPage = () => {
     };
   }, [state.myStream, state.audioProcessingActive, peer, sendStream, state.streamReady]);
 
-  // ------------------ Enhanced getUserMediaStream ------------------
-  const getUserMediaStream = useCallback(async () => {
-    try {
-      console.log("🎥 Requesting camera and microphone access...");
-      
-      // Enhanced audio constraints for echo cancellation
-      const constraints = {
-        video: { 
-          width: { ideal: 1280 }, 
-          height: { ideal: 720 }, 
-          frameRate: { ideal: 30 },
-          facingMode: "user"
-        },
-        audio: { 
-          // Advanced echo cancellation settings
-          echoCancellation: { ideal: true },
-          noiseSuppression: { ideal: true },
-          autoGainControl: { ideal: true },
-          // Specific codec preferences
-          channelCount: 1, // Mono - reduces echo
-          sampleRate: 16000, // Optimized for voice
-          sampleSize: 16,
-          // Device selection
-          deviceId: undefined, // Let browser choose best
-          // Advanced features
-          googEchoCancellation: true,
-          googNoiseSuppression: true,
-          googAutoGainControl: true,
-          googHighpassFilter: true,
-          googTypingNoiseDetection: true,
-          googNoiseReduction: true
-        }
-      };
-
-      const stream = await navigator.mediaDevices.getUserMedia(constraints);
-
-      // Verify audio quality
-      const audioTracks = stream.getAudioTracks();
-      audioTracks.forEach(track => {
-        const settings = track.getSettings();
-        console.log("🔊 Audio settings after getUserMedia:", settings);
-        
-        // Apply additional constraints if needed
-        track.applyConstraints({
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-          channelCount: 1
-        }).catch(err => {
-          console.warn("Could not apply audio constraints:", err);
-        });
-      });
-
-      console.log("✅ Media devices accessed successfully");
-      dispatch({ type: "SET_MY_STREAM", payload: stream });
-      
-      if (myVideoRef.current) {
-        myVideoRef.current.srcObject = stream;
-        console.log("✅ Local video stream attached");
-      }
-      
-      await sendStream(stream);
-      dispatch({ type: "SET_STREAM_READY", payload: true });
-      dispatch({ type: "SET_AUDIO_PROCESSING_ACTIVE", payload: true });
-      console.log("✅ Stream ready for WebRTC");
-
-      // Handle pending incoming call automatically
-      if (pendingIncomingCall.current) {
-        console.log("🔄 Processing pending incoming call...");
-        handleIncomingCall(pendingIncomingCall.current);
-        pendingIncomingCall.current = null;
-      }
-    } catch (err) {
-      console.error("❌ Error accessing media devices:", err);
-      
-      // Fallback to simpler constraints
-      if (err.name === 'OverconstrainedError' || err.name === 'ConstraintNotSatisfiedError') {
-        try {
-          console.log("🔄 Trying fallback constraints...");
-          const fallbackStream = await navigator.mediaDevices.getUserMedia({
-            video: true,
-            audio: {
-              echoCancellation: true,
-              noiseSuppression: true,
-              autoGainControl: true
-            }
-          });
-          
-          dispatch({ type: "SET_MY_STREAM", payload: fallbackStream });
-          await sendStream(fallbackStream);
-          dispatch({ type: "SET_STREAM_READY", payload: true });
-          dispatch({ type: "SET_AUDIO_PROCESSING_ACTIVE", payload: true });
-        } catch (fallbackErr) {
-          console.error("Fallback also failed:", fallbackErr);
-          toast.error("Please allow camera and microphone access");
-        }
-      } else {
-        toast.error("Failed to access camera/microphone");
-      }
-    }
-  }, [sendStream, handleIncomingCall]);
-
-  // ------------------ Helper function to format call duration ------------------
-  const getCallDurationText = () => {
-    if (!state.callStartTime) return "0 seconds";
-
-    const now = Date.now();
-    const elapsed = now - state.callStartTime;
-
-    const hours = Math.floor(elapsed / (1000 * 60 * 60));
-    const minutes = Math.floor((elapsed % (1000 * 60 * 60)) / (1000 * 60));
-    const seconds = Math.floor((elapsed % (1000 * 60)) / 1000);
-
-    let durationText = "";
-    if (hours > 0) {
-      durationText += `${hours} hour${hours > 1 ? "s" : ""}`;
-      if (minutes > 0) durationText += ` ${minutes} minute${minutes > 1 ? "s" : ""}`;
-    } else if (minutes > 0) {
-      durationText += `${minutes} minute${minutes > 1 ? "s" : ""}`;
-      if (seconds > 0 && minutes < 5) durationText += ` ${seconds} second${seconds > 1 ? "s" : ""}`;
-    } else {
-      durationText += `${seconds} second${seconds > 1 ? "s" : ""}`;
-    }
-
-    return durationText.trim();
-  };
+  // Initial call to getUserMediaStream
+  useEffect(() => {
+    getUserMediaStream();
+  }, [getUserMediaStream]);
 
   // ------------------ Debug WebRTC Connection ------------------
   useEffect(() => {
@@ -412,96 +500,6 @@ const RoomPage = () => {
       clearTimeout(playTimeout);
     };
   }, [peer]);
-
-  // ------------------ New User Joined ------------------
-  const handleNewUserJoined = useCallback(
-    async ({ emailId, name, socketId }) => {
-      // ALWAYS set remote name immediately
-      dispatch({ type: "SET_REMOTE_EMAIL", payload: emailId });
-      dispatch({ type: "SET_REMOTE_NAME", payload: name });
-      
-      // Store remote socket ID for ICE candidates
-      remoteSocketIdRef.current = socketId;
-      if (setRemoteSocketId) {
-        setRemoteSocketId(socketId);
-      }
-      console.log("✅ Remote socket ID stored:", socketId);
-
-      // Store pending call if stream is not ready
-      if (!state.streamReady) {
-        pendingIncomingCall.current = { fromEmail: emailId, fromName: name, socketId };
-        console.log("⏳ Stream not ready, call pending...");
-        return;
-      }
-
-      try {
-        console.log("📞 Creating offer for:", emailId);
-        const offer = await createOffer();
-        socket.emit("call-user", { 
-          emailId, 
-          offer,
-          socketId: socketId
-        });
-        console.log("📨 Offer sent to:", emailId);
-      } catch (err) {
-        console.error("❌ Error creating offer:", err);
-      }
-    },
-    [createOffer, socket, state.streamReady, setRemoteSocketId],
-  );
-
-  // ------------------ Incoming Call ------------------
-  const handleIncomingCall = useCallback(
-    async ({ from, offer, fromName }) => {
-      dispatch({ type: "SET_REMOTE_EMAIL", payload: from });
-      dispatch({ type: "SET_REMOTE_NAME", payload: fromName });
-      
-      // Store remote socket ID
-      remoteSocketIdRef.current = from;
-      if (setRemoteSocketId) {
-        setRemoteSocketId(from);
-      }
-      console.log("📲 Incoming call from socket ID:", from);
-
-      if (!state.streamReady) {
-        pendingIncomingCall.current = { from, offer, fromName };
-        console.log("⏳ Stream not ready, incoming call pending...");
-        return;
-      }
-
-      try {
-        console.log("📝 Creating answer for:", from);
-        const answer = await createAnswer(offer);
-        socket.emit("call-accepted", { 
-          to: from, 
-          ans: answer 
-        });
-        console.log("📨 Answer sent to:", from);
-      } catch (err) {
-        console.error("❌ Error creating answer:", err);
-      }
-    },
-    [createAnswer, socket, state.streamReady, setRemoteSocketId],
-  );
-
-  // ------------------ Call Accepted ------------------
-  const handleCallAccepted = useCallback(
-    async ({ ans }) => {
-      try {
-        console.log("✅ Setting remote answer");
-        await setRemoteAns(ans);
-        console.log("✅ Remote answer set successfully");
-      } catch (err) {
-        console.error("❌ Error setting remote answer:", err);
-      }
-    },
-    [setRemoteAns],
-  );
-
-  // Initial call to getUserMediaStream
-  useEffect(() => {
-    getUserMediaStream();
-  }, [getUserMediaStream]);
 
   // If remote video is not received yet, retry connecting after 1 second
   useEffect(() => {
@@ -915,13 +913,6 @@ const RoomPage = () => {
     const newAudioProcessingState = !state.audioProcessingActive;
     dispatch({ type: "SET_AUDIO_PROCESSING_ACTIVE", payload: newAudioProcessingState });
     
-    if (newAudioProcessingState && state.myStream) {
-      // Re-initialize audio processing
-      setTimeout(() => {
-        // This will trigger the audio processing useEffect
-      }, 100);
-    }
-    
     toast(newAudioProcessingState ? "Audio Processing ON" : "Audio Processing OFF", {
       icon: newAudioProcessingState ? "🎚️" : "🔇"
     });
@@ -1063,11 +1054,7 @@ const RoomPage = () => {
   useEffect(() => {
     if (pendingIncomingCall.current && state.streamReady) {
       console.log("🔄 Processing pending call now that stream is ready");
-      handleIncomingCall({
-        from: pendingIncomingCall.current.fromEmail,
-        fromName: pendingIncomingCall.current.fromName,
-        offer: pendingIncomingCall.current.offer,
-      });
+      handleIncomingCall(pendingIncomingCall.current);
       pendingIncomingCall.current = null;
     }
   }, [state.streamReady, handleIncomingCall]);
@@ -1099,7 +1086,7 @@ const RoomPage = () => {
     console.log("=========================");
   };
 
-  // UI/UX Design
+  // UI/UX Design - SAME AS BEFORE (unchanged)
   return (
     <div className="min-h-screen text-white flex bg-gradient-to-br from-gray-900 via-black to-blue-900">
       {/* Header Inside Status & Clock */}
