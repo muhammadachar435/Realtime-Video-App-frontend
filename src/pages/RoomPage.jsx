@@ -1,5 +1,5 @@
 // Import hooks
-import { useEffect, useCallback, useRef, useReducer, useMemo } from "react";
+import { useEffect, useCallback, useRef, useReducer, useMemo, useState } from "react";
 
 // Import router
 import { useParams } from "react-router-dom";
@@ -51,34 +51,14 @@ const RoomPage = () => {
   const remoteVideoRef = useRef();
   const remoteStreamRef = useRef(null);
   const remoteSocketIdRef = useRef(null);
+  const playAttemptRef = useRef(null); // Track play attempts
+
+  // State to track video play status
+  const [isRemoteVideoPlaying, setIsRemoteVideoPlaying] = useState(false);
 
   // totalUsers
   const totalUsers = useMemo(() => (state.remoteName ? 2 : 1), [state.remoteName]);
 
-
-// Add this function near the top of your component
-const optimizeAudio = useCallback((stream) => {
-  if (!stream) return;
-  
-  const audioTracks = stream.getAudioTracks();
-  audioTracks.forEach(track => {
-    // Apply optimal audio constraints
-    track.applyConstraints({
-      echoCancellation: { ideal: true },
-      noiseSuppression: { ideal: true },
-      autoGainControl: { ideal: true },
-      channelCount: 1, // Mono - reduces echo
-      sampleRate: 16000, // Lower sample rate for mobile compatibility
-      latency: 0.01, // Low latency
-    }).then(() => {
-      console.log("✅ Audio optimized:", track.getSettings());
-    }).catch(err => {
-      console.warn("⚠️ Could not apply audio constraints:", err);
-    });
-  });
-}, []);
-
-  
   // Helper function to format call duration
   const getCallDurationText = () => {
     if (!state.callStartTime) return "0 seconds";
@@ -136,7 +116,7 @@ const optimizeAudio = useCallback((stream) => {
 
     // Handle incoming ICE candidates
     const handleIncomingIceCandidate = ({ candidate, from }) => {
-      console.log("📥 Received ICE candidate from:", from, candidate);
+      console.log("📥 Received ICE candidate from:", from);
       if (candidate && peer.remoteDescription) {
         peer.addIceCandidate(new RTCIceCandidate(candidate)).catch(err => {
           console.error("❌ Error adding ICE candidate:", err);
@@ -147,7 +127,7 @@ const optimizeAudio = useCallback((stream) => {
     // Handle local ICE candidate generation
     const handleLocalIceCandidate = (event) => {
       if (event.candidate && remoteSocketIdRef.current && socket) {
-        console.log("📤 Sending ICE candidate to:", remoteSocketIdRef.current, event.candidate);
+        console.log("📤 Sending ICE candidate to:", remoteSocketIdRef.current);
         socket.emit("ice-candidate", {
           to: remoteSocketIdRef.current,
           candidate: event.candidate,
@@ -162,14 +142,6 @@ const optimizeAudio = useCallback((stream) => {
     // Handle ICE connection state changes
     peer.oniceconnectionstatechange = () => {
       console.log("❄️ ICE Connection State:", peer.iceConnectionState);
-      if (peer.iceConnectionState === "failed") {
-        console.log("🔄 ICE failed, trying to restart...");
-        try {
-          peer.restartIce();
-        } catch (err) {
-          console.error("❌ Failed to restart ICE:", err);
-        }
-      }
     };
 
     return () => {
@@ -181,118 +153,49 @@ const optimizeAudio = useCallback((stream) => {
     };
   }, [socket, peer]);
 
-  // ------------------ Remote Track ------------------
-// ------------------ Remote Track ------------------
-useEffect(() => {
-  let playTimeout;
-  let retryCount = 0;
-  const MAX_RETRIES = 3;
+  // ------------------ Simple Remote Track Handler ------------------
+  useEffect(() => {
+    const handleTrackEvent = (event) => {
+      console.log("🎬 Track event received:", event.track.kind);
+      
+      if (event.streams && event.streams[0]) {
+        remoteStreamRef.current = event.streams[0];
+        console.log("📹 Remote stream received");
 
-  // handleTrackEvent
-  const handleTrackEvent = (event) => {
-    console.log("🎬 Track event received:", event);
-    
-    if (event.streams && event.streams[0]) {
-      remoteStreamRef.current = event.streams[0];
-      console.log("📹 Remote stream received with tracks:", 
-        event.streams[0].getTracks().map(t => `${t.kind}:${t.id}`)
-      );
-
-      if (remoteVideoRef.current) {
-        console.log("🔄 Attaching remote stream to video element");
-        remoteVideoRef.current.srcObject = remoteStreamRef.current;
-
-        // Small delay to avoid AbortError
-        clearTimeout(playTimeout);
-        playTimeout = setTimeout(() => {
-          // Try to play the video
-          const playPromise = remoteVideoRef.current.play();
+        if (remoteVideoRef.current) {
+          console.log("🔄 Attaching remote stream to video element");
           
-          if (playPromise !== undefined) {
-            playPromise.then(() => {
-              console.log("✅ Remote video playing successfully");
-              dispatch({ type: "SET_REMOTEVIDEOREADY", payload: true });
-            }).catch((err) => {
-              console.error("❌ Error playing remote video:", err);
-              
-              // Retry playing if failed
-              if (retryCount < MAX_RETRIES) {
-                retryCount++;
-                console.log(`🔄 Retrying play (${retryCount}/${MAX_RETRIES})...`);
-                setTimeout(() => {
-                  remoteVideoRef.current.play().catch(e => {
-                    console.error(`❌ Retry ${retryCount} failed:`, e);
-                  });
-                }, 500);
-              }
-            });
+          // Clear any previous play attempts
+          if (playAttemptRef.current) {
+            clearTimeout(playAttemptRef.current);
           }
-        }, 100); // Increased delay to 100ms
+          
+          // Set srcObject immediately
+          remoteVideoRef.current.srcObject = remoteStreamRef.current;
+          
+          // Set volume to prevent echo
+          remoteVideoRef.current.volume = 0.5;
+          
+          // Don't try to play here - let the browser handle it
+          // The video will play automatically because of autoPlay attribute
+        }
       }
-    }
-  };
+    };
 
-  // Also listen for addstream event (older browsers)
-  const handleAddStream = (event) => {
-    console.log("📹 AddStream event:", event);
-    if (event.stream) {
-      remoteStreamRef.current = event.stream;
-      if (remoteVideoRef.current) {
-        remoteVideoRef.current.srcObject = event.stream;
+    if (peer) {
+      peer.addEventListener("track", handleTrackEvent);
+    }
+
+    return () => {
+      if (peer) {
+        peer.removeEventListener("track", handleTrackEvent);
       }
-    }
-  };
-
-  peer.addEventListener("track", handleTrackEvent);
-  peer.addEventListener("addstream", handleAddStream); // For compatibility
-
-  return () => {
-    peer.removeEventListener("track", handleTrackEvent);
-    peer.removeEventListener("addstream", handleAddStream);
-    clearTimeout(playTimeout);
-  };
-}, [peer, dispatch]);
-
-  // ------------------ Force Video Playback ------------------
-useEffect(() => {
-  if (!remoteVideoRef.current || !remoteStreamRef.current) return;
-
-  const forcePlayVideo = () => {
-    if (remoteVideoRef.current && remoteStreamRef.current) {
-      console.log("🚀 Force playing remote video...");
-      
-      // Ensure srcObject is set
-      if (remoteVideoRef.current.srcObject !== remoteStreamRef.current) {
-        remoteVideoRef.current.srcObject = remoteStreamRef.current;
+      if (playAttemptRef.current) {
+        clearTimeout(playAttemptRef.current);
       }
-      
-      // Try to play
-      remoteVideoRef.current.play().then(() => {
-        console.log("✅ Force play successful");
-        dispatch({ type: "SET_REMOTEVIDEOREADY", payload: true });
-      }).catch(err => {
-        console.error("❌ Force play failed:", err);
-      });
-    }
-  };
+    };
+  }, [peer]);
 
-  // Try immediately
-  forcePlayVideo();
-  
-  // Try again after 1 second
-  const timeout1 = setTimeout(forcePlayVideo, 1000);
-  
-  // Try again after 2 seconds
-  const timeout2 = setTimeout(forcePlayVideo, 2000);
-
-  return () => {
-    clearTimeout(timeout1);
-    clearTimeout(timeout2);
-  };
-}, [remoteStreamRef.current]); // Re-run when remote stream changes
-
-  
-  
   // ------------------ New User Joined ------------------
   const handleNewUserJoined = useCallback(
     async ({ emailId, name, socketId }) => {
@@ -378,133 +281,59 @@ useEffect(() => {
     [setRemoteAns],
   );
 
-  // ------------------ Local Media ------------------
- // Update your getUserMediaStream function:
-const getUserMediaStream = useCallback(async () => {
-  try {
-    console.log("🎥 Requesting camera and microphone access...");
-    
-    // Use these optimized constraints
-    const constraints = {
-      video: { 
-        width: { ideal: 640 }, // Reduced resolution
-        height: { ideal: 480 },
-        frameRate: { ideal: 24 },
-      },
-      audio: {
-        echoCancellation: { ideal: true },
-        noiseSuppression: { ideal: true },
-        autoGainControl: { ideal: true },
-        channelCount: 1, // Mono audio
-        sampleRate: 16000, // 16kHz sample rate
-        sampleSize: 16,
-        volume: 0.7, // Reduced volume to prevent feedback
-      }
-    };
-
-    console.log("Using constraints:", constraints);
-    
-    const stream = await navigator.mediaDevices.getUserMedia(constraints);
-    console.log("✅ Media devices accessed successfully");
-    
-    // Optimize audio tracks
-    optimizeAudio(stream);
-    
-    dispatch({ type: "SET_MY_STREAM", payload: stream });
-    
-    if (myVideoRef.current) {
-      myVideoRef.current.srcObject = stream;
-      console.log("✅ Local video stream attached");
+  // ------------------ Optimized Local Media ------------------
+  const getUserMediaStream = useCallback(async () => {
+    try {
+      console.log("🎥 Requesting camera and microphone access...");
       
-      // Set local video volume to 0 to prevent echo
-      myVideoRef.current.volume = 0;
-    }
-    
-    await sendStream(stream);
-    dispatch({ type: "SET_STREAM_READY", payload: true });
-    console.log("✅ Stream ready for WebRTC");
+      // SIMPLIFIED constraints
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { 
+          width: { ideal: 640 }, 
+          height: { ideal: 480 },
+        },
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: false, // Disable auto gain to prevent echo
+        },
+      });
 
-    // Handle pending incoming call automatically
-    if (pendingIncomingCall.current) {
-      console.log("🔄 Processing pending incoming call...");
-      handleIncomingCall(pendingIncomingCall.current);
-      pendingIncomingCall.current = null;
-    }
-  } catch (err) {
-    console.error("❌ Error accessing media devices:", err);
-    
-    // Try with simpler constraints if failed
-    if (err.name === 'OverconstrainedError') {
-      console.log("🔄 Trying with simpler constraints...");
-      try {
-        const simpleStream = await navigator.mediaDevices.getUserMedia({
-          video: true,
-          audio: {
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true
-          }
-        });
-        optimizeAudio(simpleStream);
-        dispatch({ type: "SET_MY_STREAM", payload: simpleStream });
-        if (myVideoRef.current) {
-          myVideoRef.current.srcObject = simpleStream;
-          myVideoRef.current.volume = 0;
-        }
-        await sendStream(simpleStream);
-        dispatch({ type: "SET_STREAM_READY", payload: true });
-      } catch (simpleErr) {
-        console.error("❌ Simple constraints also failed:", simpleErr);
-        toast.error("Failed to access camera/microphone");
+      console.log("✅ Media devices accessed successfully");
+      
+      // Mute local video element to prevent echo
+      if (myVideoRef.current) {
+        myVideoRef.current.muted = true;
+        myVideoRef.current.volume = 0;
       }
-    } else {
+      
+      dispatch({ type: "SET_MY_STREAM", payload: stream });
+      
+      if (myVideoRef.current) {
+        myVideoRef.current.srcObject = stream;
+        console.log("✅ Local video stream attached");
+      }
+      
+      await sendStream(stream);
+      dispatch({ type: "SET_STREAM_READY", payload: true });
+      console.log("✅ Stream ready for WebRTC");
+
+      // Handle pending incoming call automatically
+      if (pendingIncomingCall.current) {
+        console.log("🔄 Processing pending incoming call...");
+        handleIncomingCall(pendingIncomingCall.current);
+        pendingIncomingCall.current = null;
+      }
+    } catch (err) {
+      console.error("❌ Error accessing media devices:", err);
       toast.error("Failed to access camera/microphone");
     }
-  }
-}, [sendStream, handleIncomingCall, optimizeAudio]);
-  
+  }, [sendStream, handleIncomingCall]);
+
   useEffect(() => {
     getUserMediaStream();
   }, [getUserMediaStream]);
 
-// Add this useEffect for audio monitoring
-useEffect(() => {
-  if (!peer || !remoteStreamRef.current) return;
-
-  const monitorAudio = () => {
-    const audioTracks = remoteStreamRef.current?.getAudioTracks();
-    if (audioTracks && audioTracks.length > 0) {
-      console.log("🔊 Remote audio track status:", {
-        enabled: audioTracks[0].enabled,
-        muted: audioTracks[0].muted,
-        readyState: audioTracks[0].readyState
-      });
-    }
-  };
-
-  // Monitor audio every 2 seconds
-  const interval = setInterval(monitorAudio, 2000);
-  
-  // Fix audio echo by adjusting volume
-  if (remoteVideoRef.current) {
-    // Set optimal volume level
-    remoteVideoRef.current.volume = 0.7;
-    
-    // Add event listeners for audio issues
-    remoteVideoRef.current.addEventListener('volumechange', () => {
-      console.log("🔊 Remote video volume changed to:", remoteVideoRef.current.volume);
-    });
-  }
-
-  return () => {
-    clearInterval(interval);
-    if (remoteVideoRef.current) {
-      remoteVideoRef.current.removeEventListener('volumechange', () => {});
-    }
-  };
-}, [peer, remoteStreamRef.current]);
-  
-  
   // If remote video is not received yet, retry connecting after 1 second
   useEffect(() => {
     if (!remoteStreamRef.current && state.remoteEmail && state.streamReady) {
@@ -542,7 +371,7 @@ useEffect(() => {
     }
   }, [remoteStreamRef.current]);
 
-  //  -------------------Copy Meeting Link---------------------------------
+  // -------------------Copy Meeting Link---------------------------------
   const copyMeetingLink = async () => {
     const link = `${window.location.origin}/room/${roomId}`;
     
@@ -786,45 +615,24 @@ useEffect(() => {
 
   // ---------------- toggleHandFree -----------------------
   // This function switches between speaker mode and normal mode while managing microphone audio to avoid echo
+  const toggleHandfree = async () => {
+    if (!remoteVideoRef.current || !state.myStream) return;
 
-const toggleHandfree = async () => {
-  if (!remoteVideoRef.current || !state.myStream) return;
+    const micTracks = state.myStream.getAudioTracks();
 
-  const newHandfreeState = !state.usingHandfree;
-  
-  if (newHandfreeState && state.handfreeDeviceId) {
-    // Switch to speaker mode
-    await remoteVideoRef.current.setSinkId(state.handfreeDeviceId);
-    
-    // Mute local microphone when using speaker to prevent echo
-    state.myStream.getAudioTracks().forEach((t) => {
-      t.enabled = false;
-    });
-    
-    // Reduce volume when on speaker
-    remoteVideoRef.current.volume = 0.6;
-    
-    console.log("🔊 Switched to speaker mode, mic muted");
-    toast("Speaker Mode ON (Mic Muted)", { icon: "🔊" });
-  } else {
-    // Switch back to normal mode
-    await remoteVideoRef.current.setSinkId("");
-    
-    // Re-enable microphone
-    state.myStream.getAudioTracks().forEach((t) => {
-      t.enabled = state.micOn; // Restore previous mic state
-    });
-    
-    // Restore normal volume
-    remoteVideoRef.current.volume = 0.7;
-    
-    console.log("🎧 Switched to normal mode");
-    toast("Speaker Mode OFF", { icon: "🎧" });
-  }
-  
-  dispatch({ type: "TOGGLE_HANDFREE" });
-};
-  
+    if (!state.usingHandfree && state.handfreeDeviceId) {
+      await remoteVideoRef.current.setSinkId(state.handfreeDeviceId);
+      micTracks.forEach((t) => (t.enabled = false));
+      dispatch({ type: "TOGGLE_HANDFREE" });
+      toast("Speaker Mode ON", { icon: "🔊" });
+    } else {
+      await remoteVideoRef.current.setSinkId("");
+      micTracks.forEach((t) => (t.enabled = true));
+      dispatch({ type: "TOGGLE_HANDFREE" });
+      toast("Speaker Mode OFF", { icon: "🎧" });
+    }
+  };
+
   //  ----------------- Chat Handle ---------------------
   const handleChat = () => {
     dispatch({ type: "SET_CHATCLOSE", payload: !state.chatClose });
@@ -835,32 +643,17 @@ const toggleHandfree = async () => {
     dispatch({ type: "SET_IsSWAPPED", payload: !state.isSwapped });
   };
 
-  //  ----------------- handleRemoteVideoReady ---------------------
-const handleRemoteVideoReady = () => {
-  console.log("✅ Video canPlay event fired");
-  
-  // Try to play if not already playing
-  if (remoteVideoRef.current && remoteVideoRef.current.paused) {
-    remoteVideoRef.current.play().then(() => {
-      console.log("✅ Remote video started playing from canPlay event");
-      dispatch({ type: "SET_REMOTEVIDEOREADY", payload: true });
-      
-      // Start call timer if not already started
-      if (!state.isCallActive) {
-        dispatch({ type: "START_CALL" });
-      }
-    }).catch(err => {
-      console.error("❌ Failed to play from canPlay event:", err);
-    });
-  } else {
+  //  ----------------- Simple handleRemoteVideoReady ---------------------
+  const handleRemoteVideoReady = () => {
+    console.log("✅ Video canPlay event fired");
     dispatch({ type: "SET_REMOTEVIDEOREADY", payload: true });
+    setIsRemoteVideoPlaying(true);
     
     // Start call timer if not already started
     if (!state.isCallActive) {
       dispatch({ type: "START_CALL" });
     }
-  }
-};
+  };
 
   // ------------------ Chat ------------------
   // Sends a chat message to the room and updates local chat state
@@ -967,50 +760,6 @@ const handleRemoteVideoReady = () => {
     console.log("=========================");
   };
 
-  // Add this emergency fix useEffect
-useEffect(() => {
-  if (!remoteVideoRef.current) return;
-  
-  // Wait 3 seconds after connection, then adjust settings
-  const timer = setTimeout(() => {
-    console.log("🔄 Applying audio echo fixes...");
-    
-    if (remoteVideoRef.current) {
-      // Critical: Mute local video element (it shouldn't play audio anyway)
-      if (myVideoRef.current) {
-        myVideoRef.current.muted = true;
-        myVideoRef.current.volume = 0;
-      }
-      
-      // Set remote audio to optimal levels
-      remoteVideoRef.current.volume = 0.7;
-      remoteVideoRef.current.muted = false;
-      
-      // Disable AEC if too aggressive
-      const remoteStream = remoteVideoRef.current.srcObject;
-      if (remoteStream) {
-        const audioTracks = remoteStream.getAudioTracks();
-        audioTracks.forEach(track => {
-          try {
-            track.applyConstraints({
-              echoCancellation: false, // Sometimes AEC causes issues
-              noiseSuppression: true,
-              autoGainControl: false, // Disable auto gain
-            });
-          } catch (err) {
-            console.warn("Could not adjust audio constraints:", err);
-          }
-        });
-      }
-      
-      console.log("✅ Audio echo fixes applied");
-    }
-  }, 3000);
-  
-  return () => clearTimeout(timer);
-}, [remoteVideoRef.current]);
-
-  
   // UI/UX Design
   return (
     <div className="min-h-screen text-white flex bg-gradient-to-br from-gray-900 via-black to-blue-900">
@@ -1062,29 +811,21 @@ useEffect(() => {
       ${state.isSwapped ? "top-4 right-4 w-56 sm:w-56 h-36 z-20 shadow-2xl" : "top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 inset-0 w-full xl:max-w-4xl h-[95%] z-10"}
     `}
         >
-        <video
-  ref={remoteVideoRef}
-  autoPlay
-  playsInline
-  muted={false} // Make sure this is FALSE
-  volume={0.7} // Set default volume
-  onCanPlay={handleRemoteVideoReady}
-  onLoadedMetadata={() => console.log("📹 Remote video metadata loaded")}
-  onLoadedData={() => console.log("📹 Remote video data loaded")}
-  onPlaying={() => {
-    console.log("▶️ Remote video is playing");
-    dispatch({ type: "SET_REMOTEVIDEOREADY", payload: true });
-    
-    // Set optimal audio settings when playing starts
-    if (remoteVideoRef.current) {
-      remoteVideoRef.current.volume = 0.7;
-    }
-  }}
-  onVolumeChange={() => {
-    console.log("🔊 Volume changed to:", remoteVideoRef.current?.volume);
-  }}
-  className={`w-full h-full object-cover shadow-2xl rounded-md bg-[#0d1321] ${state.remoteCameraOn ? "block" : "hidden"} `}
-/>
+          <video
+            ref={remoteVideoRef}
+            autoPlay
+            playsInline
+            muted={false}
+            volume={0.5}
+            onCanPlay={handleRemoteVideoReady}
+            onPlaying={() => {
+              console.log("▶️ Remote video is playing");
+              setIsRemoteVideoPlaying(true);
+            }}
+            onPause={() => setIsRemoteVideoPlaying(false)}
+            onError={(e) => console.error("❌ Remote video error:", e.target.error)}
+            className={`w-full h-full object-cover shadow-2xl rounded-md bg-[#0d1321] ${state.remoteCameraOn ? "block" : "hidden"} `}
+          />
 
           {(remoteStreamRef.current || state.remoteEmail) && (
             <span className="absolute top-2 left-2 z-40 font-sans font-semibold bg-green-700 px-3 py-1 text-sm rounded-full">
@@ -1128,7 +869,7 @@ useEffect(() => {
             ref={myVideoRef}
             autoPlay
             playsInline
-            muted
+            muted={true}
             className={`w-full h-full rounded-md object-cover shadow-2xl bg-[#0d1321] ${state.cameraOn ? "block" : "hidden"} `}
           />
 
@@ -1231,35 +972,6 @@ useEffect(() => {
         >
           {state.chatClose ? <MessageSquareText /> : <MessageSquareOff />}
         </div>
-
-        // Add these buttons to your bottom control bar (BOTTOM CONTROL BAR section):
-
-// Echo Test Button
-<div
-  onClick={() => {
-    if (remoteVideoRef.current) {
-      remoteVideoRef.current.volume = Math.max(0.1, remoteVideoRef.current.volume - 0.1);
-      toast(`Volume reduced to ${Math.round(remoteVideoRef.current.volume * 100)}%`);
-    }
-  }}
-  className={`p-3 rounded-full bg-purple-600 hover:bg-purple-700 cursor-pointer`}
->
-  🔉
-</div>
-
-// Mute Remote Audio Button
-<div
-  onClick={() => {
-    if (remoteVideoRef.current) {
-      const isMuted = remoteVideoRef.current.muted;
-      remoteVideoRef.current.muted = !isMuted;
-      toast(isMuted ? "Remote audio UNMUTED" : "Remote audio MUTED");
-    }
-  }}
-  className={`p-3 rounded-full bg-orange-600 hover:bg-orange-700 cursor-pointer`}
->
-  {remoteVideoRef.current?.muted ? "🔇" : "🔊"}
-</div>
 
         <div
           onClick={copyMeetingLink}
