@@ -786,24 +786,7 @@ useEffect(() => {
 
   // ---------------- toggleHandFree -----------------------
   // This function switches between speaker mode and normal mode while managing microphone audio to avoid echo
-  // --------------- toggleMic ----------------------
-const toggleMic = () => {
-  if (!state.myStream) return;
-  
-  const newMicState = !state.micOn;
-  state.myStream.getAudioTracks().forEach((t) => {
-    t.enabled = newMicState;
-    console.log(`🎤 Microphone ${newMicState ? 'ENABLED' : 'DISABLED'}`);
-  });
-  
-  dispatch({ type: "TOGGLE_MIC" });
-  
-  toast(newMicState ? "Mic ON" : "Mic OFF", {
-    icon: newMicState ? "🎤" : "🔇",
-  });
-};
 
-// ---------------- toggleHandFree -----------------------
 const toggleHandfree = async () => {
   if (!remoteVideoRef.current || !state.myStream) return;
 
