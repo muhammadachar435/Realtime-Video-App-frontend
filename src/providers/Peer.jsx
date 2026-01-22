@@ -8,60 +8,68 @@ function PeerProvider({ children }) {
   const peerRef = useRef(null);
   const remoteSocketIdRef = useRef(null);
 
-  const peer = useMemo(() => {
-    const pc = new RTCPeerConnection({
-      iceServers: [
-        // STUN Servers
-        {
-          urls: [
-            "stun:stun.l.google.com:19302",
-            "stun:global.stun.twilio.com:3478",
-            "stun:stun1.l.google.com:19302",
-            "stun:stun2.l.google.com:19302",
-            "stun:stun3.l.google.com:19302",
-            "stun:stun4.l.google.com:19302",
-          ],
-        },
-        // TURN Server 1 (Your ExpressTURN)
-        {
-          urls: "turn:free.expressturn.com:3478",
-          username: "000000002084452952",
-          credential: "aCNpyKTY3wZX1HLTGCh5XvUnyn4="
-        },
-        // TURN Server 2 (Backup)
-        {
-          urls: "turn:numb.viagenie.ca:3478",
-          username: "webrtc@live.com",
-          credential: "muazkh"
-        }
-      ],
-      iceCandidatePoolSize: 10,
-      iceTransportPolicy: "all",
-    });
+  // In PeerProvider.js, update the peer configuration:
+const peer = useMemo(() => {
+  const pc = new RTCPeerConnection({
+    iceServers: [
+      // STUN Servers
+      {
+        urls: [
+          "stun:stun.l.google.com:19302",
+          "stun:global.stun.twilio.com:3478",
+        ],
+      },
+      // TURN Servers (Your ExpressTURN)
+      {
+        urls: "turn:free.expressturn.com:3478",
+        username: "000000002084452952",
+        credential: "aCNpyKTY3wZX1HLTGCh5XvUnyn4="
+      },
+    ],
+    iceCandidatePoolSize: 10,
+    iceTransportPolicy: "all",
+    // CRITICAL: Configure audio/video codecs to prevent echo
+    sdpSemantics: 'unified-plan',
+  });
 
-    // Handle ICE candidates
-    pc.onicecandidate = (event) => {
-      if (event.candidate && socket && remoteSocketIdRef.current) {
-        socket.emit("ice-candidate", {
-          to: remoteSocketIdRef.current,
-          candidate: event.candidate,
-        });
-      }
-    };
+  // Configure audio tracks to prevent echo
+  const configureAudioTrack = (track) => {
+    if (track.kind === 'audio') {
+      const settings = track.getSettings();
+      console.log("🔊 Audio track settings:", settings);
+      
+      // Apply echo cancellation
+      track.applyConstraints({
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+        channelCount: 1, // Mono audio reduces echo
+      }).catch(err => console.error("Audio constraints error:", err));
+    }
+  };
 
-    // Handle ICE connection state
-    pc.oniceconnectionstatechange = () => {
-      console.log("ICE Connection State:", pc.iceConnectionState);
-      if (pc.iceConnectionState === "failed") {
-        console.log("ICE failed, restarting ICE...");
-        pc.restartIce();
-      }
-    };
+  // Handle when tracks are added
+  pc.ontrack = (event) => {
+    console.log("🎵 Remote track added:", event.track.kind);
+    if (event.track.kind === 'audio') {
+      configureAudioTrack(event.track);
+    }
+  };
 
-    peerRef.current = pc;
-    return pc;
-  }, [socket]);
+  // Handle ICE candidates
+  pc.onicecandidate = (event) => {
+    if (event.candidate && socket && remoteSocketIdRef.current) {
+      socket.emit("ice-candidate", {
+        to: remoteSocketIdRef.current,
+        candidate: event.candidate,
+      });
+    }
+  };
 
+  peerRef.current = pc;
+  return pc;
+}, [socket]);
+  
   // Store remote socket ID
   const setRemoteSocketId = (socketId) => {
     remoteSocketIdRef.current = socketId;
