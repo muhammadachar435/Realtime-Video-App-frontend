@@ -1169,6 +1169,7 @@
 // export default RoomPage;
 
 
+
 // Import hooks
 import { useEffect, useCallback, useRef, useReducer, useMemo } from "react";
 
@@ -1227,7 +1228,7 @@ const RoomPage = () => {
 
   const [state, dispatch] = useReducer(roomReducer, enhancedInitialState);
 
-  // useRef - FIXED
+  // useRef
   const pendingIncomingCall = useRef(null);
   const myVideoRef = useRef();
   const remoteVideoRef = useRef();
@@ -1235,10 +1236,10 @@ const RoomPage = () => {
   const remoteSocketIdRef = useRef(null);
   const isSettingRemoteAnswer = useRef(false);
   const connectionAttempts = useRef(0);
-  const hasSentStreamRef = useRef(false); // POINT 1: Track if stream sent
+  const hasSentStreamRef = useRef(false);
   const hasInitializedMedia = useRef(false);
   const mediaStreamRef = useRef(null);
-  const lastRemoteStream = useRef(null); // Track last remote stream
+  const lastRemoteStream = useRef(null);
 
   // Detect mobile device
   useEffect(() => {
@@ -1275,43 +1276,6 @@ const RoomPage = () => {
     return durationText.trim();
   };
 
-  // ------------------ Camera Controls ------------------
-  const toggleCamera = () => {
-    if (!state.myStream) return;
-
-    const newCameraState = !state.cameraOn;
-
-    // enable / disable camera track
-    state.myStream.getVideoTracks().forEach((track) => (track.enabled = newCameraState));
-
-    // update my own state
-    dispatch({ type: "TOGGLE_CAMERA" });
-
-    // send ONLY to other user in room
-    socket.emit("camera-toggle", {
-      cameraOn: newCameraState,
-      roomId,
-    });
-
-    toast(newCameraState ? "Camera ON" : "Camera OFF", {
-      icon: newCameraState ? "📹" : "📵",
-    });
-  };
-
-  // Camera Toggle Listener
-  useEffect(() => {
-    if (!socket) return;
-
-    const handleCameraToggle = ({ cameraOn }) => {
-      console.log("Remote Camera on:", cameraOn);
-      dispatch({ type: "SET_REMOTE_CAMERA", payload: cameraOn });
-    };
-
-    socket.on("camera-toggle", handleCameraToggle);
-
-    return () => socket.off("camera-toggle", handleCameraToggle);
-  }, [socket]);
-
   // ------------------ FIXED: Enhanced Echo Cancellation ------------------
   const applyEnhancedEchoCancellation = useCallback(() => {
     if (!state.myStream) return;
@@ -1329,6 +1293,89 @@ const RoomPage = () => {
       }
     });
   }, [state.myStream, state.echoCancellationEnabled, state.noiseSuppressionEnabled]);
+
+  // ------------------ FIXED: Incoming Call ------------------
+  const handleIncomingCall = useCallback(
+    async ({ from, offer, fromName }) => {
+      console.log("📲 Incoming call received from:", from);
+      
+      if (state.connectionState === "connected") {
+        console.log("⚠️ Already connected, ignoring duplicate call");
+        return;
+      }
+
+      dispatch({ type: "SET_REMOTE_EMAIL", payload: from });
+      dispatch({ type: "SET_REMOTE_NAME", payload: fromName });
+      dispatch({ type: "SET_CONNECTION_STATE", payload: "connecting" });
+      
+      remoteSocketIdRef.current = from;
+      if (setRemoteSocketId) {
+        setRemoteSocketId(from);
+      }
+
+      if (!state.streamReady) {
+        pendingIncomingCall.current = { from, offer, fromName };
+        console.log("⏳ Stream not ready, incoming call pending...");
+        return;
+      }
+
+      try {
+        console.log("📝 Creating answer for:", from);
+        const answer = await createAnswer(offer);
+        socket.emit("call-accepted", { 
+          to: from, 
+          ans: answer 
+        });
+        console.log("📨 Answer sent to:", from);
+      } catch (err) {
+        console.error("❌ Error creating answer:", err);
+        dispatch({ type: "SET_CONNECTION_STATE", payload: "failed" });
+      }
+    },
+    [createAnswer, socket, state.streamReady, state.connectionState, setRemoteSocketId],
+  );
+
+  // ------------------ New User Joined ------------------
+  const handleNewUserJoined = useCallback(
+    async ({ emailId, name, socketId }) => {
+      console.log("👤 New user joined:", name);
+      
+      if (state.connectionState === "connected") {
+        console.log("⚠️ Already connected, ignoring duplicate join");
+        return;
+      }
+
+      dispatch({ type: "SET_REMOTE_EMAIL", payload: emailId });
+      dispatch({ type: "SET_REMOTE_NAME", payload: name });
+      dispatch({ type: "SET_CONNECTION_STATE", payload: "connecting" });
+      
+      remoteSocketIdRef.current = socketId;
+      if (setRemoteSocketId) {
+        setRemoteSocketId(socketId);
+      }
+
+      if (!state.streamReady) {
+        pendingIncomingCall.current = { fromEmail: emailId, fromName: name, socketId };
+        console.log("⏳ Stream not ready, call pending...");
+        return;
+      }
+
+      try {
+        console.log("📞 Creating offer for:", emailId);
+        const offer = await createOffer();
+        socket.emit("call-user", { 
+          emailId, 
+          offer,
+          socketId: socketId
+        });
+        console.log("📨 Offer sent to:", emailId);
+      } catch (err) {
+        console.error("❌ Error creating offer:", err);
+        dispatch({ type: "SET_CONNECTION_STATE", payload: "failed" });
+      }
+    },
+    [createOffer, socket, state.streamReady, state.connectionState, setRemoteSocketId],
+  );
 
   // ------------------ FIXED: Local Media - RUNS ONLY ONCE ------------------
   const getUserMediaStream = useCallback(async () => {
@@ -1423,88 +1470,42 @@ const RoomPage = () => {
     };
   }, [getUserMediaStream, state.mediaAccessGranted]);
 
-  // ------------------ FIXED: Incoming Call ------------------
-  const handleIncomingCall = useCallback(
-    async ({ from, offer, fromName }) => {
-      console.log("📲 Incoming call received from:", from);
-      
-      if (state.connectionState === "connected") {
-        console.log("⚠️ Already connected, ignoring duplicate call");
-        return;
-      }
+  // ------------------ Camera Controls ------------------
+  const toggleCamera = () => {
+    if (!state.myStream) return;
 
-      dispatch({ type: "SET_REMOTE_EMAIL", payload: from });
-      dispatch({ type: "SET_REMOTE_NAME", payload: fromName });
-      dispatch({ type: "SET_CONNECTION_STATE", payload: "connecting" });
-      
-      remoteSocketIdRef.current = from;
-      if (setRemoteSocketId) {
-        setRemoteSocketId(from);
-      }
+    const newCameraState = !state.cameraOn;
 
-      if (!state.streamReady) {
-        pendingIncomingCall.current = { from, offer, fromName };
-        console.log("⏳ Stream not ready, incoming call pending...");
-        return;
-      }
+    // enable / disable camera track
+    state.myStream.getVideoTracks().forEach((track) => (track.enabled = newCameraState));
 
-      try {
-        console.log("📝 Creating answer for:", from);
-        const answer = await createAnswer(offer);
-        socket.emit("call-accepted", { 
-          to: from, 
-          ans: answer 
-        });
-        console.log("📨 Answer sent to:", from);
-      } catch (err) {
-        console.error("❌ Error creating answer:", err);
-        dispatch({ type: "SET_CONNECTION_STATE", payload: "failed" });
-      }
-    },
-    [createAnswer, socket, state.streamReady, state.connectionState, setRemoteSocketId],
-  );
+    // update my own state
+    dispatch({ type: "TOGGLE_CAMERA" });
 
-  // ------------------ New User Joined ------------------
-  const handleNewUserJoined = useCallback(
-    async ({ emailId, name, socketId }) => {
-      console.log("👤 New user joined:", name);
-      
-      if (state.connectionState === "connected") {
-        console.log("⚠️ Already connected, ignoring duplicate join");
-        return;
-      }
+    // send ONLY to other user in room
+    socket.emit("camera-toggle", {
+      cameraOn: newCameraState,
+      roomId,
+    });
 
-      dispatch({ type: "SET_REMOTE_EMAIL", payload: emailId });
-      dispatch({ type: "SET_REMOTE_NAME", payload: name });
-      dispatch({ type: "SET_CONNECTION_STATE", payload: "connecting" });
-      
-      remoteSocketIdRef.current = socketId;
-      if (setRemoteSocketId) {
-        setRemoteSocketId(socketId);
-      }
+    toast(newCameraState ? "Camera ON" : "Camera OFF", {
+      icon: newCameraState ? "📹" : "📵",
+    });
+  };
 
-      if (!state.streamReady) {
-        pendingIncomingCall.current = { fromEmail: emailId, fromName: name, socketId };
-        console.log("⏳ Stream not ready, call pending...");
-        return;
-      }
+  // Camera Toggle Listener
+  useEffect(() => {
+    if (!socket) return;
 
-      try {
-        console.log("📞 Creating offer for:", emailId);
-        const offer = await createOffer();
-        socket.emit("call-user", { 
-          emailId, 
-          offer,
-          socketId: socketId
-        });
-        console.log("📨 Offer sent to:", emailId);
-      } catch (err) {
-        console.error("❌ Error creating offer:", err);
-        dispatch({ type: "SET_CONNECTION_STATE", payload: "failed" });
-      }
-    },
-    [createOffer, socket, state.streamReady, state.connectionState, setRemoteSocketId],
-  );
+    const handleCameraToggle = ({ cameraOn }) => {
+      console.log("Remote Camera on:", cameraOn);
+      dispatch({ type: "SET_REMOTE_CAMERA", payload: cameraOn });
+    };
+
+    socket.on("camera-toggle", handleCameraToggle);
+
+    return () => socket.off("camera-toggle", handleCameraToggle);
+  }, [socket]);
 
   // ------------------ FIXED: Call Accepted ------------------
   const handleCallAccepted = useCallback(
@@ -1666,9 +1667,6 @@ const RoomPage = () => {
     if (newSpeakerMode) {
       // Entering speaker mode - DO NOT MUTE MIC
       console.log("🔊 Switching to SPEAKER mode");
-      
-      // BONUS POINT: Don't force mute microphone
-      // Let browser's echo cancellation work
       
       // Try to force audio output to speakers
       if (remoteVideoRef.current && remoteVideoRef.current.setSinkId) {
