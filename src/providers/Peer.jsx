@@ -103,16 +103,30 @@ function PeerProvider({ children }) {
     }
   };
 
-  const sendStream = (stream) => {
-  stream.getTracks().forEach(track => {
-    const exists = peer.getSenders()
-      .find(sender => sender.track === track);
+ const sendStream = async (stream) => {
+    try {
+      // Clear existing senders
+      const senders = peer.getSenders();
+      senders.forEach((sender) => {
+        if (sender.track) {
+          peer.removeTrack(sender);
+        }
+      });
 
-    if (!exists) {
-      peer.addTrack(track, stream);
+      // Add new tracks
+      stream.getTracks().forEach((track) => {
+        peer.addTrack(track, stream);
+      });
+
+      console.log("✅ Stream tracks added to peer connection");
+    } catch (error) {
+      console.error("Error sending stream:", error);
+      throw error;
     }
-  });
-};
+  };
+
+
+  
   // Cleanup
   useEffect(() => {
     return () => {
