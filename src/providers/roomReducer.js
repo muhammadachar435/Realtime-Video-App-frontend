@@ -27,14 +27,6 @@ export const initialState = {
   audioDevices: [],
   selectedAudioDevice: null,
   audioProcessingActive: true,
-  
-  // NEW FIELDS FOR VOICE ACTIVITY DETECTION
-  audioVolume: 0.7,
-  isSpeaking: false,
-  noiseGateThreshold: 0.1,
-  voiceActivityDetection: true,
-  vadEnabled: true,
-  noiseGateLevel: 0.15,
 };
 
 export function roomReducer(state, action) {
@@ -109,21 +101,6 @@ export function roomReducer(state, action) {
       return { ...state, selectedAudioDevice: action.payload };
     case "SET_AUDIO_PROCESSING_ACTIVE":
       return { ...state, audioProcessingActive: action.payload };
-    
-    // NEW CASES FOR VOICE ACTIVITY DETECTION
-    case "SET_AUDIO_VOLUME":
-      return { ...state, audioVolume: action.payload };
-    case "SET_SPEAKING":
-      return { ...state, isSpeaking: action.payload };
-    case "SET_NOISE_GATE_THRESHOLD":
-      return { ...state, noiseGateThreshold: action.payload };
-    case "TOGGLE_VOICE_ACTIVITY_DETECTION":
-      return { ...state, voiceActivityDetection: !state.voiceActivityDetection };
-    case "SET_VAD_ENABLED":
-      return { ...state, vadEnabled: action.payload };
-    case "SET_NOISE_GATE_LEVEL":
-      return { ...state, noiseGateLevel: action.payload };
-    
     default:
       return state;
   }
