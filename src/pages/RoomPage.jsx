@@ -1336,34 +1336,6 @@ const RoomPage = () => {
           <PhoneOff className="w-5 h-5" />
         </div>
       </div>
-
-      {/* Audio Device Selection Dropdown (Optional - can be hidden by default) */}
-      {state.audioDevices.length > 0 && (
-        <div className="fixed bottom-28 right-4 bg-gray-800 p-2 rounded-lg shadow-lg z-50">
-          <select
-            onChange={(e) => selectAudioDevice(e.target.value)}
-            value={state.selectedAudioDevice || ''}
-            className="bg-gray-700 text-white p-2 rounded text-sm"
-          >
-            <option value="">Select Audio Device</option>
-            {state.audioDevices.map((device) => (
-              <option key={device.deviceId} value={device.deviceId}>
-                {device.label || `Microphone ${device.deviceId.slice(0, 8)}`}
-              </option>
-            ))}
-          </select>
-        </div>
-      )}
-
-      {/* Debug button (optional - remove in production) */}
-      {process.env.NODE_ENV === 'development' && (
-        <button
-          onClick={debugWebRTC}
-          className="fixed bottom-24 left-4 bg-gray-800 text-white p-2 rounded-full text-xs z-50"
-        >
-          🐛 Debug
-        </button>
-      )}
     </div>
   );
 };
