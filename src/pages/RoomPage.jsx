@@ -654,27 +654,6 @@ const RoomPage = () => {
     
     socket.on("call-accepted", handleCallAccepted);
     
-    socket.on("chat-message", (data) => {
-      // Add to chat
-      dispatch({ type: "ADD_MESSAGE", payload: data });
-
-      // Show toast for messages from others
-      if (data.from !== socket.id) {
-        // Use data.senderName that comes from backend
-        toast.custom(
-          (t) => (
-            <div className="bg-green-800 shadow-2xl text-white p-4 rounded-xl flex items-center gap-2 z-50">
-              <MessageSquareText className="w-5 h-5" />
-              <span>
-                {data.senderName || "Guest"}: {data.text}
-              </span>
-            </div>
-          ),
-          { duration: 3000 },
-        );
-      }
-    });
-
     // user-left
     socket.on("user-left", ({ socketId }) => {
       pendingIncomingCall.current = null;
