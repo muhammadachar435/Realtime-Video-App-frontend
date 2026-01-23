@@ -29,6 +29,7 @@ import {
   X,
   Users,
   Ear,
+  FlipHorizontal,
 } from "lucide-react";
 
 // import toast to display Notification
@@ -50,7 +51,8 @@ const RoomPage = () => {
     noiseSuppressionEnabled: true,
     audioDevices: [],
     selectedAudioDevice: null,
-    audioProcessingActive: false // CHANGED: Disable custom audio processing
+    audioProcessingActive: false,
+    mirrorSelfView: true, // NEW: Control mirroring
   }), []);
 
   // useReducer
@@ -93,6 +95,15 @@ const RoomPage = () => {
     }
 
     return durationText.trim();
+  };
+
+  // ------------------ Toggle Mirror ------------------
+  const toggleMirror = () => {
+    dispatch({ type: "TOGGLE_MIRROR" });
+    toast(state.mirrorSelfView ? "Mirror OFF" : "Mirror ON", {
+      icon: "🪞",
+      duration: 1000,
+    });
   };
 
   // ------------------ Incoming Call ------------------
@@ -899,7 +910,7 @@ const RoomPage = () => {
     console.log("=========================");
   };
 
-  // UI/UX Design - SAME AS BEFORE (unchanged)
+  // UI/UX Design
   return (
     <div className="min-h-screen text-white flex bg-gradient-to-br from-gray-900 via-black to-blue-900">
       {/* Header Inside Status & Clock */}
@@ -1001,11 +1012,13 @@ const RoomPage = () => {
             autoPlay
             playsInline
             muted
-            className={`w-full h-full rounded-md object-cover shadow-2xl bg-[#0d1321] ${state.cameraOn ? "block" : "hidden"} `}
+            className={`w-full h-full rounded-md object-cover shadow-2xl bg-[#0d1321] ${state.cameraOn ? "block" : "hidden"} 
+            ${state.mirrorSelfView ? 'scale-x-[-1]' : ''}`}
           />
 
           {/* Local Video User A Name */}
-          <span className="absolute top-2 left-2 z-40 font-sans font-semibold bg-green-700 px-3 py-1 text-sm rounded-full">
+          <span className={`absolute top-2 left-2 z-40 font-sans font-semibold bg-green-700 px-3 py-1 text-sm rounded-full
+            ${state.mirrorSelfView ? 'scale-x-[-1]' : ''}`}>
             {state.myName}
           </span>
 
@@ -1098,6 +1111,15 @@ const RoomPage = () => {
           title="Toggle Speaker/Headphone Mode"
         >
           {state.usingHandfree ? <Headphones /> : <Volume2 />}
+        </div>
+
+        {/* Mirror Toggle Button */}
+        <div
+          onClick={toggleMirror}
+          className={`p-3 rounded-full ${state.mirrorSelfView ? 'bg-blue-700' : 'bg-[#364355]'} hover:bg-[#2e4361] cursor-pointer`}
+          title="Mirror Self View"
+        >
+          <FlipHorizontal className="w-5 h-5" />
         </div>
 
         {/* Enhanced Audio Controls */}
