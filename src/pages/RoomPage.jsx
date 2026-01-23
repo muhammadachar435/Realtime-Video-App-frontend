@@ -342,8 +342,6 @@ const RoomPage = () => {
           }
         };
        
-        
-       
         const destination = audioContext.createMediaStreamDestination();
         source.connect(noiseSuppressor);
         noiseSuppressor.connect(destination);
