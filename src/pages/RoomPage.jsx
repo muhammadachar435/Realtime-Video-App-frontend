@@ -30,8 +30,8 @@ import {
   Users,
   Ear,
   FlipHorizontal,
-  Headset,
   VolumeX,
+  Headset,
 } from "lucide-react";
 
 // import toast to display Notification
@@ -46,7 +46,7 @@ const RoomPage = () => {
   // RoomID
   const { roomId } = useParams();
 
-  // Enhanced initialState
+  // Enhanced initialState - Add missing properties
   const enhancedInitialState = useMemo(() => ({
     ...initialState,
     echoCancellationEnabled: true,
@@ -55,10 +55,10 @@ const RoomPage = () => {
     selectedAudioDevice: null,
     audioProcessingActive: false,
     mirrorSelfView: true,
-    autoMuteWhenSpeaking: false, // NEW: Auto-mute when remote is speaking
-    isRemoteSpeaking: false, // NEW: Track if remote is speaking
-    volumeLevel: 0.5, // NEW: Control output volume
-    usingHeadphones: false, // NEW: Headphone detection
+    volumeLevel: 0.5, // NEW
+    usingHeadphones: false, // NEW
+    autoMuteWhenSpeaking: false, // NEW
+    isRemoteSpeaking: false, // NEW
   }), []);
 
   // useReducer
@@ -72,11 +72,11 @@ const RoomPage = () => {
   const remoteSocketIdRef = useRef(null);
   const audioContextRef = useRef(null);
   const audioAnalyserRef = useRef(null);
-  const localAudioStreamRef = useRef(null);
-  const gainNodeRef = useRef(null);
   const remoteAudioAnalyserRef = useRef(null);
+  const gainNodeRef = useRef(null);
   const echoCheckIntervalRef = useRef(null);
   const [detectedFeedback, setDetectedFeedback] = useState(false);
+  const [showVolumeSlider, setShowVolumeSlider] = useState(false);
 
   // totalUsers
   const totalUsers = useMemo(() => (state.remoteName ? 2 : 1), [state.remoteName]);
@@ -115,13 +115,19 @@ const RoomPage = () => {
     });
   };
 
-  // ------------------ AUTO ECHO DETECTION & FIX ------------------
+  // ------------------ Volume Control ------------------
+  const adjustVolume = (level) => {
+    dispatch({ type: "SET_VOLUME_LEVEL", payload: level });
+    toast(`Volume: ${Math.round(level * 100)}%`, { duration: 1000 });
+  };
+
+  // ------------------ ECHO DETECTION & PREVENTION ------------------
   useEffect(() => {
     if (!state.myStream || !remoteStreamRef.current) return;
 
     const detectAndFixEcho = () => {
       try {
-        // Create audio context for echo detection
+        // Create audio context if not exists
         if (!audioContextRef.current) {
           audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)();
         }
@@ -135,14 +141,14 @@ const RoomPage = () => {
         }
 
         // Monitor remote audio
-        if (remoteStreamRef.current && remoteStreamRef.current.getAudioTracks().length > 0 && !remoteAudioAnalyserRef.current) {
+        if (remoteStreamRef.current.getAudioTracks().length > 0 && !remoteAudioAnalyserRef.current) {
           const remoteSource = audioContextRef.current.createMediaStreamSource(remoteStreamRef.current);
           remoteAudioAnalyserRef.current = audioContextRef.current.createAnalyser();
           remoteAudioAnalyserRef.current.fftSize = 256;
           remoteSource.connect(remoteAudioAnalyserRef.current);
         }
 
-        // Check for echo/feedback
+        // Check for echo
         if (audioAnalyserRef.current && remoteAudioAnalyserRef.current) {
           const localData = new Uint8Array(audioAnalyserRef.current.frequencyBinCount);
           const remoteData = new Uint8Array(remoteAudioAnalyserRef.current.frequencyBinCount);
@@ -154,26 +160,20 @@ const RoomPage = () => {
           const localAvg = localData.reduce((a, b) => a + b) / localData.length;
           const remoteAvg = remoteData.reduce((a, b) => a + b) / remoteData.length;
 
-          // ECHO DETECTION LOGIC
-          // If remote volume is high but I'm not speaking, it's likely echo
-          if (remoteAvg > 50 && localAvg < 20) {
-            // Remote is loud but I'm quiet - could be echo feedback
+          // ECHO DETECTION: Remote is loud but I'm not speaking
+          if (remoteAvg > 60 && localAvg < 20) {
             setDetectedFeedback(true);
             
-            // Auto-reduce remote volume to prevent echo
+            // Auto-reduce volume to prevent echo
             if (remoteVideoRef.current && state.volumeLevel > 0.3) {
               dispatch({ type: "SET_VOLUME_LEVEL", payload: 0.3 });
-              toast.warning("Reducing volume to prevent echo", { 
-                icon: "🔇",
-                duration: 2000 
-              });
             }
           } else {
             setDetectedFeedback(false);
           }
 
-          // If both are loud at same time, it's echo loop!
-          if (localAvg > 40 && remoteAvg > 40) {
+          // ECHO LOOP DETECTION: Both are loud simultaneously
+          if (localAvg > 50 && remoteAvg > 50) {
             console.warn("⚠️ ECHO LOOP DETECTED! Auto-muting...");
             
             // Auto-mute local mic to break loop
@@ -191,8 +191,8 @@ const RoomPage = () => {
       }
     };
 
-    // Run echo detection every 2 seconds
-    echoCheckIntervalRef.current = setInterval(detectAndFixEcho, 2000);
+    // Run echo detection every 3 seconds
+    echoCheckIntervalRef.current = setInterval(detectAndFixEcho, 3000);
 
     return () => {
       if (echoCheckIntervalRef.current) {
@@ -206,58 +206,26 @@ const RoomPage = () => {
     if (!remoteVideoRef.current) return;
 
     // Set volume on remote video element
-    remoteVideoRef.current.volume = state.volumeLevel;
+    remoteVideoRef.current.volume = state.volumeLevel || 0.5;
     
-    // Also control via Web Audio API for better quality
+    // Apply Web Audio API volume control
     if (remoteStreamRef.current && audioContextRef.current) {
       try {
-        if (gainNodeRef.current) {
-          gainNodeRef.current.gain.value = state.volumeLevel;
-        } else {
-          const remoteSource = audioContextRef.current.createMediaStreamSource(remoteStreamRef.current);
+        const remoteSource = audioContextRef.current.createMediaStreamSource(remoteStreamRef.current);
+        if (!gainNodeRef.current) {
           gainNodeRef.current = audioContextRef.current.createGain();
-          gainNodeRef.current.gain.value = state.volumeLevel;
-          const destination = audioContextRef.current.createMediaStreamDestination();
-          
-          remoteSource.connect(gainNodeRef.current);
-          gainNodeRef.current.connect(destination);
-          
-          // Replace remote audio track
-          const newAudioTrack = destination.stream.getAudioTracks()[0];
-          remoteStreamRef.current.getAudioTracks().forEach(track => track.stop());
-          remoteStreamRef.current.addTrack(newAudioTrack);
         }
+        gainNodeRef.current.gain.value = state.volumeLevel || 0.5;
+        
+        const destination = audioContextRef.current.createMediaStreamDestination();
+        remoteSource.connect(gainNodeRef.current);
+        gainNodeRef.current.connect(destination);
+        
       } catch (err) {
         console.log("Volume control error:", err);
       }
     }
   }, [state.volumeLevel, remoteStreamRef.current]);
-
-  // ------------------ Auto Headphone Detection ------------------
-  useEffect(() => {
-    const detectHeadphones = async () => {
-      try {
-        const devices = await navigator.mediaDevices.enumerateDevices();
-        const audioOutputs = devices.filter(d => d.kind === 'audiooutput');
-        
-        // Check if headphones are connected
-        const hasHeadphones = audioOutputs.some(device => 
-          device.label.toLowerCase().includes('headphone') || 
-          device.label.toLowerCase().includes('earphone') ||
-          device.label.toLowerCase().includes('headset')
-        );
-        
-        if (hasHeadphones && !state.usingHeadphones) {
-          dispatch({ type: "SET_USING_HEADPHONES", payload: true });
-          console.log("🎧 Headphones detected");
-        }
-      } catch (err) {
-        console.log("Headphone detection error:", err);
-      }
-    };
-
-    detectHeadphones();
-  }, []);
 
   // ------------------ Incoming Call ------------------
   const handleIncomingCall = useCallback(
@@ -345,7 +313,7 @@ const RoomPage = () => {
     try {
       console.log("🎥 Requesting camera and microphone access...");
       
-      // OPTIMIZED CONSTRAINTS TO PREVENT ECHO
+      // ULTRA OPTIMIZED CONSTRAINTS FOR ECHO PREVENTION
       const constraints = {
         video: { 
           width: { ideal: 1280 }, 
@@ -354,55 +322,76 @@ const RoomPage = () => {
           facingMode: "user"
         },
         audio: { 
-          // CRITICAL: Enable all echo cancellation features
-          echoCancellation: { exact: true },
-          noiseSuppression: { exact: true },
-          autoGainControl: { exact: true },
+          // CRITICAL: Strong echo cancellation
+          echoCancellation: { ideal: true, exact: true },
+          noiseSuppression: { ideal: true, exact: true },
+          autoGainControl: { ideal: true, exact: true },
           
-          // Set LOW latency to reduce echo
-          latency: { ideal: 0.01 },
+          // Lower latency = less echo
+          latency: { ideal: 0.01, max: 0.02 },
           
-          // Use mono to reduce complexity
-          channelCount: { ideal: 1 },
+          // Mono = simpler processing
+          channelCount: { ideal: 1, max: 1 },
           
-          // Browser-specific optimizations
+          // Volume control
+          volume: { ideal: 0.5, max: 0.7 },
+          
+          // Browser optimizations
           googEchoCancellation: true,
           googNoiseSuppression: true,
           googAutoGainControl: true,
           googHighpassFilter: true,
-          
-          // Disable audio mirroring (causes echo)
-          googAudioMirroring: false,
-          
-          // Volume control
-          volume: { ideal: 0.5, max: 0.7 }
+          googAudioMirroring: false, // Important: disable mirroring
         }
       };
 
-      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      // First attempt with optimized constraints
+      let stream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia(constraints);
+        console.log("✅ Optimized constraints successful");
+      } catch (optimalErr) {
+        console.log("🔄 Optimized failed, trying simpler...");
+        // Fallback to essential constraints only
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: true,
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true
+          }
+        });
+        console.log("✅ Simple constraints successful");
+      }
 
-      // Apply additional constraints to audio track
+      // Apply NOISE GATE to prevent background noise
       const audioTracks = stream.getAudioTracks();
       if (audioTracks.length > 0) {
         const audioTrack = audioTracks[0];
         
-        // Get and log settings
+        // Log final settings
         const settings = audioTrack.getSettings();
-        console.log("🔊 FINAL Audio Settings:", settings);
-        
-        // Force echo cancellation
+        console.log("🔊 FINAL Audio Settings:", {
+          echoCancellation: settings.echoCancellation,
+          noiseSuppression: settings.noiseSuppression,
+          autoGainControl: settings.autoGainControl,
+          channelCount: settings.channelCount,
+          sampleRate: settings.sampleRate,
+          latency: settings.latency
+        });
+
+        // Force critical constraints
         try {
           await audioTrack.applyConstraints({
-            echoCancellation: { exact: true },
-            noiseSuppression: { exact: true },
-            autoGainControl: { exact: true }
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true
           });
-          console.log("✅ Audio constraints forced");
         } catch (err) {
-          console.warn("Could not force audio constraints:", err);
+          console.warn("Could not force constraints:", err);
         }
 
-        // Create noise gate to mute when not speaking
+        // Setup Web Audio API for noise gate
         try {
           const audioContext = new (window.AudioContext || window.webkitAudioContext)();
           const source = audioContext.createMediaStreamSource(stream);
@@ -410,23 +399,26 @@ const RoomPage = () => {
           const gainNode = audioContext.createGain();
           
           analyser.fftSize = 256;
+          analyser.smoothingTimeConstant = 0.8;
           source.connect(analyser);
           source.connect(gainNode);
           
           const destination = audioContext.createMediaStreamDestination();
           gainNode.connect(destination);
           
-          // Add noise gate (auto-mute when quiet)
+          // Noise gate: auto-mute when quiet
           const dataArray = new Uint8Array(analyser.frequencyBinCount);
           const checkVolume = () => {
+            if (!analyser) return;
+            
             analyser.getByteFrequencyData(dataArray);
             const avg = dataArray.reduce((a, b) => a + b) / dataArray.length;
             
-            // Noise gate: mute when volume < 15
+            // Mute when volume < threshold (15)
             if (avg < 15) {
-              gainNode.gain.setTargetAtTime(0.001, audioContext.currentTime, 0.1);
+              gainNode.gain.setTargetAtTime(0.001, audioContext.currentTime, 0.05);
             } else {
-              gainNode.gain.setTargetAtTime(1.0, audioContext.currentTime, 0.1);
+              gainNode.gain.setTargetAtTime(1.0, audioContext.currentTime, 0.05);
             }
             
             requestAnimationFrame(checkVolume);
@@ -466,22 +458,19 @@ const RoomPage = () => {
     } catch (err) {
       console.error("❌ Error accessing media devices:", err);
       
-      // ULTRA SIMPLE FALLBACK
+      // Ultimate fallback: audio only
       if (err.name === 'OverconstrainedError' || err.name === 'ConstraintNotSatisfiedError') {
         try {
-          console.log("🔄 Trying ULTRA simple constraints...");
+          console.log("🔄 Trying audio-only mode...");
           const fallbackStream = await navigator.mediaDevices.getUserMedia({
-            video: false, // NO VIDEO - reduces complexity
-            audio: {
-              echoCancellation: true,
-              noiseSuppression: true
-            }
+            video: false,
+            audio: true
           });
           
           dispatch({ type: "SET_MY_STREAM", payload: fallbackStream });
           await sendStream(fallbackStream);
           dispatch({ type: "SET_STREAM_READY", payload: true });
-          toast.success("Audio-only mode (better for echo prevention)");
+          toast.success("Audio-only mode activated");
         } catch (fallbackErr) {
           console.error("Fallback also failed:", fallbackErr);
           toast.error("Please allow microphone access");
@@ -592,7 +581,7 @@ const RoomPage = () => {
 
         if (remoteVideoRef.current) {
           remoteVideoRef.current.srcObject = remoteStreamRef.current;
-
+          
           // Set initial volume to prevent loud echo
           remoteVideoRef.current.volume = 0.5;
 
@@ -699,7 +688,7 @@ const RoomPage = () => {
       });
     }
 
-    // Cleanup intervals
+    // Cleanup
     if (echoCheckIntervalRef.current) {
       clearInterval(echoCheckIntervalRef.current);
     }
@@ -708,11 +697,6 @@ const RoomPage = () => {
     if (state.myStream) {
       state.myStream.getTracks().forEach((track) => track.stop());
       console.log("🛑 Local media tracks stopped");
-    }
-
-    // Cleanup audio context
-    if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
-      audioContextRef.current.close();
     }
 
     // Reset videos
@@ -910,12 +894,6 @@ const RoomPage = () => {
     }
   };
 
-  // ------------------ Volume Control ------------------
-  const adjustVolume = (level) => {
-    dispatch({ type: "SET_VOLUME_LEVEL", payload: level });
-    toast(`Volume: ${Math.round(level * 100)}%`, { duration: 1000 });
-  };
-
   // ------------------ Echo Cancellation ------------------
   const toggleEchoCancellation = async () => {
     if (!state.myStream) return;
@@ -984,35 +962,6 @@ const RoomPage = () => {
     detectAudioDevices();
   }, []);
 
-  // ------------------ Select Audio Device ------------------
-  const selectAudioDevice = async (deviceId) => {
-    try {
-      const videoTrack = state.myStream?.getVideoTracks()[0];
-      const videoConstraints = videoTrack ? videoTrack.getSettings() : true;
-      
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { 
-          deviceId: { exact: deviceId },
-          echoCancellation: true,
-          noiseSuppression: true
-        },
-        video: videoConstraints
-      });
-      
-      dispatch({ type: "SET_MY_STREAM", payload: stream });
-      dispatch({ type: "SELECT_AUDIO_DEVICE", payload: deviceId });
-      
-      if (sendStream) {
-        await sendStream(stream);
-      }
-      
-      toast.success("Audio device changed");
-    } catch (err) {
-      console.error("Failed to switch audio device:", err);
-      toast.error("Failed to change audio device");
-    }
-  };
-
   // ------------------ Chat Handle ------------------
   const handleChat = () => {
     dispatch({ type: "SET_CHATCLOSE", payload: !state.chatClose });
@@ -1070,6 +1019,52 @@ const RoomPage = () => {
       console.log("👤 User name loaded:", savedName);
     }
   }, []);
+
+  // ------------------ Volume Slider Component ------------------
+  const VolumeSlider = () => {
+    if (!showVolumeSlider) return null;
+
+    return (
+      <div className="fixed bottom-24 left-1/2 transform -translate-x-1/2 bg-gray-800 p-4 rounded-xl shadow-2xl z-50 w-64">
+        <div className="flex justify-between items-center mb-4">
+          <h3 className="font-semibold">Volume Control</h3>
+          <button 
+            onClick={() => setShowVolumeSlider(false)} 
+            className="text-gray-400 hover:text-white"
+          >
+            <X size={18} />
+          </button>
+        </div>
+        
+        <div className="space-y-4">
+          <div>
+            <div className="flex justify-between mb-2">
+              <span className="text-sm">Remote Volume</span>
+              <span className="text-sm">{Math.round((state.volumeLevel || 0.5) * 100)}%</span>
+            </div>
+            <input
+              type="range"
+              min="0"
+              max="1"
+              step="0.1"
+              value={state.volumeLevel || 0.5}
+              onChange={(e) => adjustVolume(parseFloat(e.target.value))}
+              className="w-full h-2 bg-blue-600 rounded-lg appearance-none cursor-pointer"
+            />
+          </div>
+          
+          <div className="text-xs text-gray-400">
+            {detectedFeedback && (
+              <div className="text-red-400 mb-2">
+                ⚠️ Echo detected - volume reduced automatically
+              </div>
+            )}
+            <div>Tip: Lower volume reduces echo</div>
+          </div>
+        </div>
+      </div>
+    );
+  };
 
   // ------------------ UI ------------------
   return (
@@ -1185,7 +1180,7 @@ const RoomPage = () => {
             </div>
           )}
 
-          {/* Echo Detection Indicator */}
+          {/* Echo Warning */}
           {detectedFeedback && (
             <div className="absolute bottom-2 left-2 z-40 bg-red-600/80 px-2 py-1 rounded-full text-xs flex items-center">
               <VolumeX className="w-3 h-3 mr-1" /> Echo detected
@@ -1249,6 +1244,9 @@ const RoomPage = () => {
       {/* Leave when display message */}
       <Toaster position="top-right" reverseOrder={false} />
 
+      {/* Volume Slider */}
+      <VolumeSlider />
+
       {/* BOTTOM CONTROL BAR */}
       <div className="fixed flex flex-wrap w-full max-w-92 sm:max-w-md justify-center place-items-center gap-2.5 sm:gap-4 bottom-6 left-1/2 z-10 -translate-x-1/2 bg-[#0b1018] backdrop-blur-lg sm:px-2 py-3 rounded-xl shadow-lg">
         <div
@@ -1277,11 +1275,11 @@ const RoomPage = () => {
 
         {/* Volume Control */}
         <div
-          onClick={() => adjustVolume(Math.max(0.1, state.volumeLevel - 0.2))}
-          className="p-3 rounded-full bg-[#364355] hover:bg-[#2e4361] cursor-pointer"
-          title="Reduce Volume"
+          onClick={() => setShowVolumeSlider(!showVolumeSlider)}
+          className={`p-3 rounded-full ${detectedFeedback ? 'bg-red-700' : 'bg-[#364355]'} hover:bg-[#2e4361] cursor-pointer`}
+          title="Adjust Volume"
         >
-          <VolumeX className="w-5 h-5" />
+          <Volume2 className="w-5 h-5" />
         </div>
 
         {/* Mirror Toggle */}
@@ -1300,6 +1298,15 @@ const RoomPage = () => {
           title="Toggle Echo Cancellation"
         >
           <Ear className="w-5 h-5" />
+        </div>
+
+        {/* Noise Suppression */}
+        <div
+          onClick={toggleNoiseSuppression}
+          className={`p-3 rounded-full ${state.noiseSuppressionEnabled ? 'bg-green-700' : 'bg-[#364355]'} hover:bg-[#2e4361] cursor-pointer`}
+          title="Toggle Noise Suppression"
+        >
+          <Headset className="w-5 h-5" />
         </div>
 
         {/* Chat */}
@@ -1329,16 +1336,6 @@ const RoomPage = () => {
           <PhoneOff className="w-5 h-5" />
         </div>
       </div>
-
-      {/* Echo Warning Toast */}
-      {detectedFeedback && (
-        <div className="fixed top-24 left-1/2 transform -translate-x-1/2 bg-red-600 text-white px-4 py-2 rounded-lg shadow-lg z-50 animate-pulse">
-          <div className="flex items-center">
-            <VolumeX className="w-4 h-4 mr-2" />
-            <span>Echo detected! Lowering volume...</span>
-          </div>
-        </div>
-      )}
     </div>
   );
 };
