@@ -1,5 +1,4 @@
-// PeerProvider.js
-import { createContext, useContext, useRef, useEffect, useState, useCallback } from "react";
+import { createContext, useContext, useMemo, useEffect, useRef } from "react";
 import { useSocket } from "../providers/Socket";
 
 const peerContext = createContext(null);
@@ -8,355 +7,144 @@ function PeerProvider({ children }) {
   const { socket } = useSocket();
   const peerRef = useRef(null);
   const remoteSocketIdRef = useRef(null);
-  const [peerReady, setPeerReady] = useState(false);
-  const isConnectionClosed = useRef(false);
-  const localStreamRef = useRef(null);
-  const reconnectAttempts = useRef(0);
-  const MAX_RECONNECT_ATTEMPTS = 3;
 
-  // Check if peer connection is valid and open
-  const isPeerConnectionValid = useCallback(() => {
-    return peerRef.current && 
-           peerRef.current.connectionState !== 'closed' && 
-           peerRef.current.signalingState !== 'closed' &&
-           !isConnectionClosed.current;
-  }, []);
-
-  // Create or recreate peer connection
-  const createPeerConnection = useCallback(() => {
-    console.log("🔄 Creating/Recreating RTCPeerConnection...");
-    
-    // Close existing connection if any
-    if (peerRef.current) {
-      try {
-        isConnectionClosed.current = true;
-        peerRef.current.onicecandidate = null;
-        peerRef.current.oniceconnectionstatechange = null;
-        peerRef.current.onconnectionstatechange = null;
-        peerRef.current.ontrack = null;
-        peerRef.current.onnegotiationneeded = null;
-        peerRef.current.close();
-      } catch (err) {
-        console.error("Error closing old peer connection:", err);
-      }
-      peerRef.current = null;
-    }
-
-    try {
-      const pc = new RTCPeerConnection({
-        iceServers: [
-          {
-            urls: [
-              "stun:stun.l.google.com:19302",
-              "stun:stun1.l.google.com:19302",
-              "stun:stun2.l.google.com:19302",
-              "stun:stun3.l.google.com:19302",
-              "stun:stun4.l.google.com:19302",
-            ]
-          },
-          // TURN server
-          {
-            urls: "turn:free.expressturn.com:3478",
-            username: "000000002084452952",
-            credential: "aCNpyKTY3wZX1HLTGCh5XvUnyn4=",
-          }
-        ],
-        iceCandidatePoolSize: 10,
-        iceTransportPolicy: "all"
-      });
-
-      // Store peer reference
-      peerRef.current = pc;
-      isConnectionClosed.current = false;
-      reconnectAttempts.current = 0;
-
-      // ICE candidate handler
-      pc.onicecandidate = (event) => {
-        if (event.candidate && socket && remoteSocketIdRef.current && isPeerConnectionValid()) {
-          console.log("📤 Sending ICE candidate");
-          socket.emit("ice-candidate", {
-            to: remoteSocketIdRef.current,
-            candidate: event.candidate,
-          });
+  const peer = useMemo(() => {
+    const pc = new RTCPeerConnection({
+      iceServers: [
+        // STUN Servers
+        {
+          urls: [
+            "stun:stun.l.google.com:19302",
+            "stun:global.stun.twilio.com:3478",
+            "stun:stun1.l.google.com:19302",
+            "stun:stun2.l.google.com:19302",
+            "stun:stun3.l.google.com:19302",
+            "stun:stun4.l.google.com:19302",
+          ],
+        },
+        // TURN Server 1 (Your ExpressTURN)
+        {
+          urls: "turn:free.expressturn.com:3478",
+          username: "000000002084452952",
+          credential: "aCNpyKTY3wZX1HLTGCh5XvUnyn4="
+        },
+        // TURN Server 2 (Backup)
+        {
+          urls: "turn:numb.viagenie.ca:3478",
+          username: "webrtc@live.com",
+          credential: "muazkh"
         }
-      };
+      ],
+      iceCandidatePoolSize: 10,
+      iceTransportPolicy: "all",
+    });
 
-      // ICE connection state change handler
-      pc.oniceconnectionstatechange = () => {
-        console.log("❄️ ICE Connection State:", pc.iceConnectionState);
-        
-        switch(pc.iceConnectionState) {
-          case 'connected':
-            console.log("✅ ICE connected successfully");
-            reconnectAttempts.current = 0;
-            break;
-          case 'disconnected':
-            console.log("⚠️ ICE disconnected");
-            break;
-          case 'failed':
-            console.log("❌ ICE failed");
-            if (reconnectAttempts.current < MAX_RECONNECT_ATTEMPTS) {
-              reconnectAttempts.current++;
-              console.log(`🔄 Attempting ICE restart (${reconnectAttempts.current}/${MAX_RECONNECT_ATTEMPTS})`);
-              setTimeout(() => {
-                if (isPeerConnectionValid()) {
-                  pc.restartIce();
-                }
-              }, 1000);
-            }
-            break;
-          case 'closed':
-            console.log("🚫 ICE connection closed");
-            isConnectionClosed.current = true;
-            break;
-        }
-      };
-
-      // Peer connection state change handler
-      pc.onconnectionstatechange = () => {
-        console.log("🔗 Peer Connection State:", pc.connectionState);
-        
-        if (pc.connectionState === 'connected') {
-          console.log("✅ Peer-to-peer connection established!");
-          setPeerReady(true);
-        } else if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
-          console.log("⚠️ Connection issue, will attempt to reconnect...");
-          setPeerReady(false);
-        } else if (pc.connectionState === 'closed') {
-          console.log("🚫 Peer connection closed");
-          isConnectionClosed.current = true;
-          setPeerReady(false);
-        }
-      };
-
-      // Track handler for incoming media
-      pc.ontrack = (event) => {
-        console.log("📥 Received remote track:", event.track.kind);
-        // This will be handled by the RoomPage component
-      };
-
-      console.log("✅ RTCPeerConnection created successfully");
-      return pc;
-    } catch (error) {
-      console.error("❌ Failed to create RTCPeerConnection:", error);
-      return null;
-    }
-  }, [socket, isPeerConnectionValid]);
-
-  // Initialize peer connection
-  useEffect(() => {
-    const pc = createPeerConnection();
-    
-    // Cleanup on unmount
-    return () => {
-      if (pc) {
-        console.log("🧹 Cleaning up RTCPeerConnection on unmount");
-        try {
-          pc.close();
-        } catch (err) {
-          console.error("Error closing peer:", err);
-        }
+    // Handle ICE candidates
+    pc.onicecandidate = (event) => {
+      if (event.candidate && socket && remoteSocketIdRef.current) {
+        socket.emit("ice-candidate", {
+          to: remoteSocketIdRef.current,
+          candidate: event.candidate,
+        });
       }
     };
-  }, [createPeerConnection]);
+
+    // Handle ICE connection state
+    pc.oniceconnectionstatechange = () => {
+      console.log("ICE Connection State:", pc.iceConnectionState);
+      if (pc.iceConnectionState === "failed") {
+        console.log("ICE failed, restarting ICE...");
+        pc.restartIce();
+      }
+    };
+
+    peerRef.current = pc;
+    return pc;
+  }, [socket]);
 
   // Store remote socket ID
-  const setRemoteSocketId = useCallback((socketId) => {
-    console.log("📝 Setting remote socket ID:", socketId);
+  const setRemoteSocketId = (socketId) => {
     remoteSocketIdRef.current = socketId;
-  }, []);
+  };
 
-  // Create offer with robust error handling
-  const createOffer = useCallback(async () => {
-    console.log("📞 Attempting to create offer...");
-    
-    // Ensure we have a valid peer connection
-    if (!isPeerConnectionValid()) {
-      console.log("⚠️ Peer connection invalid, recreating...");
-      createPeerConnection();
-      await new Promise(resolve => setTimeout(resolve, 500));
-    }
-
-    if (!peerRef.current) {
-      throw new Error("Peer connection not available");
-    }
-
+  const createOffer = async (remoteSocketId) => {
     try {
-      // Check current state
-      console.log("📶 Current signaling state:", peerRef.current.signalingState);
-      
-      const offer = await peerRef.current.createOffer({
+      setRemoteSocketId(remoteSocketId);
+      const offer = await peer.createOffer({
         offerToReceiveAudio: true,
         offerToReceiveVideo: true,
-        iceRestart: true
       });
-      
-      await peerRef.current.setLocalDescription(offer);
-      console.log("✅ Offer created successfully");
+      await peer.setLocalDescription(offer);
       return offer;
     } catch (error) {
-      console.error("❌ Error creating offer:", error);
-      
-      // If connection is closed, recreate it and retry once
-      if (error.message.includes('closed') || peerRef.current?.signalingState === 'closed') {
-        console.log("🔄 Connection was closed, recreating...");
-        createPeerConnection();
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        
-        // Retry creating offer
-        try {
-          const retryOffer = await peerRef.current.createOffer({
-            offerToReceiveAudio: true,
-            offerToReceiveVideo: true
-          });
-          await peerRef.current.setLocalDescription(retryOffer);
-          console.log("✅ Offer created after retry");
-          return retryOffer;
-        } catch (retryError) {
-          console.error("❌ Failed to create offer after retry:", retryError);
-          throw retryError;
-        }
-      }
-      
+      console.error("Error creating offer:", error);
       throw error;
     }
-  }, [createPeerConnection, isPeerConnectionValid]);
+  };
 
-  // Create answer with robust error handling
-  const createAnswer = useCallback(async (offer) => {
-    console.log("📝 Attempting to create answer...");
-    
-    // Ensure we have a valid peer connection
-    if (!isPeerConnectionValid()) {
-      console.log("⚠️ Peer connection invalid, recreating...");
-      createPeerConnection();
-      await new Promise(resolve => setTimeout(resolve, 500));
-    }
-
-    if (!peerRef.current) {
-      throw new Error("Peer connection not available");
-    }
-
+  const createAnswer = async (offer) => {
     try {
-      await peerRef.current.setRemoteDescription(new RTCSessionDescription(offer));
-      const answer = await peerRef.current.createAnswer();
-      await peerRef.current.setLocalDescription(answer);
-      console.log("✅ Answer created successfully");
+      await peer.setRemoteDescription(new RTCSessionDescription(offer));
+      const answer = await peer.createAnswer();
+      await peer.setLocalDescription(answer);
       return answer;
     } catch (error) {
-      console.error("❌ Error creating answer:", error);
-      
-      // If connection is closed, recreate it and retry once
-      if (error.message.includes('closed') || peerRef.current?.signalingState === 'closed') {
-        console.log("🔄 Connection was closed, recreating...");
-        createPeerConnection();
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        
-        // Retry
-        try {
-          await peerRef.current.setRemoteDescription(new RTCSessionDescription(offer));
-          const retryAnswer = await peerRef.current.createAnswer();
-          await peerRef.current.setLocalDescription(retryAnswer);
-          console.log("✅ Answer created after retry");
-          return retryAnswer;
-        } catch (retryError) {
-          console.error("❌ Failed to create answer after retry:", retryError);
-          throw retryError;
-        }
-      }
-      
+      console.error("Error creating answer:", error);
       throw error;
     }
-  }, [createPeerConnection, isPeerConnectionValid]);
+  };
 
-  // Set remote answer
-  const setRemoteAns = useCallback(async (ans) => {
-    console.log("✅ Setting remote answer...");
-    
-    if (!peerRef.current || !isPeerConnectionValid()) {
-      throw new Error("Peer connection not ready");
-    }
-
+  const setRemoteAns = async (ans) => {
     try {
-      await peerRef.current.setRemoteDescription(new RTCSessionDescription(ans));
-      console.log("✅ Remote answer set successfully");
-      
-      // Send local stream if we have one
-      if (localStreamRef.current) {
-        console.log("🔄 Sending local stream after answer...");
-        await sendStream(localStreamRef.current);
-      }
+      await peer.setRemoteDescription(new RTCSessionDescription(ans));
     } catch (error) {
-      console.error("❌ Error setting remote answer:", error);
+      console.error("Error setting remote answer:", error);
       throw error;
     }
-  }, [isPeerConnectionValid]);
+  };
 
-  // Send stream to peer connection
-  const sendStream = useCallback(async (stream) => {
-    console.log("📤 Sending stream to peer...");
-    
-    // Store stream for reconnection
-    localStreamRef.current = stream;
-    
-    if (!peerRef.current || !isPeerConnectionValid()) {
-      console.log("⚠️ Peer connection not ready, storing stream for later");
-      return;
-    }
-
+  const sendStream = async (stream) => {
     try {
-      // Clear existing tracks
-      const senders = peerRef.current.getSenders();
-      senders.forEach(sender => {
+      // Clear existing senders
+      const senders = peer.getSenders();
+      senders.forEach((sender) => {
         if (sender.track) {
-          peerRef.current.removeTrack(sender);
+          peer.removeTrack(sender);
         }
       });
 
       // Add new tracks
-      stream.getTracks().forEach(track => {
-        try {
-          peerRef.current.addTrack(track, stream);
-          console.log(`➕ Added ${track.kind} track`);
-        } catch (err) {
-          console.error(`❌ Failed to add ${track.kind} track:`, err);
-        }
+      stream.getTracks().forEach((track) => {
+        peer.addTrack(track, stream);
       });
 
-      console.log("✅ Stream sent successfully");
+      console.log("✅ Stream tracks added to peer connection");
     } catch (error) {
-      console.error("❌ Error sending stream:", error);
+      console.error("Error sending stream:", error);
       throw error;
     }
-  }, [isPeerConnectionValid]);
-
-  // Reset peer connection (for manual reconnection)
-  const resetPeerConnection = useCallback(() => {
-    console.log("🔄 Manual peer connection reset");
-    createPeerConnection();
-    
-    // Resend stream if we have one
-    if (localStreamRef.current) {
-      setTimeout(() => {
-        sendStream(localStreamRef.current);
-      }, 500);
-    }
-  }, [createPeerConnection, sendStream]);
-
-  // Provide context value
-  const value = {
-    peer: peerRef.current,
-    createOffer,
-    createAnswer,
-    setRemoteAns,
-    sendStream,
-    setRemoteSocketId,
-    peerReady,
-    resetPeerConnection,
   };
 
+  // Cleanup
+  useEffect(() => {
+    return () => {
+      if (peer) {
+        peer.close();
+      }
+    };
+  }, [peer]);
+
   return (
-    <peerContext.Provider value={value}>
+    <peerContext.Provider
+      value={{
+        peer,
+        createOffer,
+        createAnswer,
+        setRemoteAns,
+        sendStream,
+        setRemoteSocketId,
+      }}
+    >
       {children}
     </peerContext.Provider>
   );
