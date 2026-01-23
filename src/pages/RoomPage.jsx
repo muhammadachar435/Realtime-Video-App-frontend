@@ -1008,38 +1008,7 @@ const RoomPage = () => {
   };
 
   // ------------------ Chat Message Listener ------------------
-  useEffect(() => {
-    if (!socket) return;
-
-    const handleChatMessage = (data) => {
-      // If this is first message from remote user, store their name
-      if (data.from !== socket.id && !state.remoteName && data.senderName) {
-        dispatch({ type: "SET_REMOTE_NAME", payload: data.senderName });
-      }
-      // Add to messages
-      dispatch({ type: "ADD_MESSAGE", payload: data });
-
-      // Show toast if from other user
-      if (data.from !== socket.id) {
-        toast.custom(
-          (t) => (
-            <div className="fixed top-4 right-4 bg-green-800 shadow-xl text-white p-4 rounded-xl flex items-center gap-3 z-50 max-w-xs">
-              <MessageSquareText className="w-5 h-5" />
-              <div>
-                <div className="font-semibold">{data.senderName || "Guest"}</div>
-                <div className="text-sm">{data.text}</div>
-              </div>
-            </div>
-          ),
-          { duration: 3000 },
-        );
-      }
-    };
-
-    
-    return () => socket.off("chat-message", handleChatMessage);
-  }, [socket, state.remoteName]);
-
+ 
   // This code waits until the microphone and camera are ready, then it automatically accepts the incoming call
   useEffect(() => {
     if (pendingIncomingCall.current && state.streamReady) {
