@@ -27,19 +27,6 @@ export const initialState = {
   audioDevices: [],
   selectedAudioDevice: null,
   audioProcessingActive: true,
-  mirrorSelfView: true,
-  
-  // NEW PROPERTIES ADDED:
-  volumeLevel: 0.5,
-  usingHeadphones: false,
-  isRemoteSpeaking: false,
-  autoMuteWhenSpeaking: false,
-  vadEnabled: true,
-  noiseGateLevel: 0.15,
-  audioVolume: 0.7,
-  isSpeaking: false,
-  noiseGateThreshold: 0.1,
-  voiceActivityDetection: true,
 };
 
 export function roomReducer(state, action) {
@@ -114,40 +101,6 @@ export function roomReducer(state, action) {
       return { ...state, selectedAudioDevice: action.payload };
     case "SET_AUDIO_PROCESSING_ACTIVE":
       return { ...state, audioProcessingActive: action.payload };
-    case "TOGGLE_MIRROR":
-      return { ...state, mirrorSelfView: !state.mirrorSelfView };
-    
-    // NEW CASES ADDED:
-    case "SET_VOLUME_LEVEL":
-      return { ...state, volumeLevel: action.payload };
-    
-    case "SET_USING_HEADPHONES":
-      return { ...state, usingHeadphones: action.payload };
-    
-    case "SET_REMOTE_SPEAKING":
-      return { ...state, isRemoteSpeaking: action.payload };
-    
-    case "TOGGLE_AUTO_MUTE":
-      return { ...state, autoMuteWhenSpeaking: !state.autoMuteWhenSpeaking };
-    
-    case "SET_VAD_ENABLED":
-      return { ...state, vadEnabled: action.payload };
-    
-    case "SET_NOISE_GATE_LEVEL":
-      return { ...state, noiseGateLevel: action.payload };
-    
-    case "SET_AUDIO_VOLUME":
-      return { ...state, audioVolume: action.payload };
-    
-    case "SET_SPEAKING":
-      return { ...state, isSpeaking: action.payload };
-    
-    case "SET_NOISE_GATE_THRESHOLD":
-      return { ...state, noiseGateThreshold: action.payload };
-    
-    case "TOGGLE_VOICE_ACTIVITY_DETECTION":
-      return { ...state, voiceActivityDetection: !state.voiceActivityDetection };
-    
     default:
       return state;
   }
