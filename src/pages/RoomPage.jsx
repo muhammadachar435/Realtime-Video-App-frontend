@@ -50,8 +50,7 @@ const RoomPage = () => {
     noiseSuppressionEnabled: true,
     audioDevices: [],
     selectedAudioDevice: null,
-    audioProcessingActive: false, // CHANGED: Disable custom audio processing
-    speakerMode: false // ADDED: Track speaker mode
+    audioProcessingActive: false // CHANGED: Disable custom audio processing
   }), []);
 
   // useReducer
@@ -62,12 +61,11 @@ const RoomPage = () => {
   const myVideoRef = useRef();
   const remoteVideoRef = useRef();
   const remoteStreamRef = useRef(null);
-  remoteSocketIdRef = useRef(null);
+  const remoteSocketIdRef = useRef(null);
   const audioContextRef = useRef(null);
   const audioProcessorRef = useRef(null);
   const localAudioStreamRef = useRef(null);
   const analyserRef = useRef(null);
-  const mediaStreamRef = useRef(null); // ADDED: Track current media stream
 
   // totalUsers
   const totalUsers = useMemo(() => (state.remoteName ? 2 : 1), [state.remoteName]);
@@ -187,7 +185,7 @@ const RoomPage = () => {
     try {
       console.log("🎥 Requesting camera and microphone access...");
       
-      // CRITICAL FIX: Use DEFAULT audio output device to prevent echo
+      // SIMPLIFIED audio constraints - browser handles echo cancellation better
       const constraints = {
         video: { 
           width: { ideal: 1280 }, 
@@ -196,64 +194,43 @@ const RoomPage = () => {
           facingMode: "user"
         },
         audio: { 
-          // CRITICAL: Force echo cancellation and noise suppression
-          echoCancellation: { exact: true }, // Use "exact" to force it
-          noiseSuppression: { exact: true },
-          autoGainControl: { exact: true },
-          // Do NOT specify sampleRate or channelCount - let browser decide
+          // Let browser handle echo cancellation natively
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+          // REMOVED: Google-specific flags and channelCount
         }
       };
 
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
-      
-      // Store reference to stream
-      mediaStreamRef.current = stream;
 
-      // CRITICAL: Set volume of local video to 0 to prevent feedback
-      if (myVideoRef.current) {
-        myVideoRef.current.volume = 0;
-      }
+      // Verify audio quality
+      const audioTracks = stream.getAudioTracks();
+      audioTracks.forEach(track => {
+        const settings = track.getSettings();
+        console.log("🔊 Audio settings after getUserMedia:", settings);
+        
+        // Apply minimal constraints - browser knows best
+        track.applyConstraints({
+          echoCancellation: true,
+          noiseSuppression: true
+        }).catch(err => {
+          console.warn("Could not apply audio constraints:", err);
+        });
+      });
 
       console.log("✅ Media devices accessed successfully");
-      console.log("🔊 Audio track settings:", stream.getAudioTracks()[0]?.getSettings());
-      
-      // Force disable speaker mode initially
-      if (remoteVideoRef.current) {
-        try {
-          await remoteVideoRef.current.setSinkId(''); // Use default output
-          console.log("🔇 Using default audio output (headphones recommended)");
-        } catch (err) {
-          console.warn("Could not set audio sink:", err);
-        }
-      }
-
       dispatch({ type: "SET_MY_STREAM", payload: stream });
       
       if (myVideoRef.current) {
         myVideoRef.current.srcObject = stream;
-        console.log("✅ Local video stream attached (volume muted)");
+        console.log("✅ Local video stream attached");
       }
       
-      // Send stream
+      // Send the original stream (browser handles echo cancellation)
       await sendStream(stream);
       dispatch({ type: "SET_STREAM_READY", payload: true });
       console.log("✅ Stream ready for WebRTC");
-
-      // Show important warning about echo
-      toast.custom(
-        (t) => (
-          <div className="bg-yellow-900 w-80 shadow-2xl text-white p-4 font-sans rounded-xl flex flex-col">
-            <div className="flex items-center gap-2">
-              <CircleAlert className="w-5 h-5 text-yellow-400" />
-              <span className="font-semibold">Echo Prevention Tip</span>
-            </div>
-            <div className="mt-2 text-sm opacity-90">
-              Use headphones to prevent echo. If using speakers, keep volume low.
-            </div>
-          </div>
-        ),
-        { duration: 6000 },
-      );
 
       // Handle pending incoming call automatically
       if (pendingIncomingCall.current) {
@@ -270,20 +247,12 @@ const RoomPage = () => {
           console.log("🔄 Trying fallback constraints...");
           const fallbackStream = await navigator.mediaDevices.getUserMedia({
             video: true,
-            audio: {
-              echoCancellation: true,
-              noiseSuppression: true
-            }
+            audio: true // Let browser choose defaults
           });
           
-          mediaStreamRef.current = fallbackStream;
           dispatch({ type: "SET_MY_STREAM", payload: fallbackStream });
           await sendStream(fallbackStream);
           dispatch({ type: "SET_STREAM_READY", payload: true });
-          
-          if (myVideoRef.current) {
-            myVideoRef.current.volume = 0;
-          }
         } catch (fallbackErr) {
           console.error("Fallback also failed:", fallbackErr);
           toast.error("Please allow camera and microphone access");
@@ -295,8 +264,9 @@ const RoomPage = () => {
   }, [sendStream, handleIncomingCall]);
 
   // ------------------ Audio Processing ------------------
-  // COMPLETELY DISABLED - Browser handles it better
   useEffect(() => {
+    // DISABLED - Browser handles audio processing better
+    // This prevents the echo feedback loop
     return () => {
       // Cleanup
       if (audioProcessorRef.current) {
@@ -307,14 +277,6 @@ const RoomPage = () => {
       }
     };
   }, []);
-
-  // CRITICAL: Prevent audio feedback by muting local video
-  useEffect(() => {
-    if (myVideoRef.current) {
-      myVideoRef.current.volume = 0;
-      myVideoRef.current.muted = true; // ADDED: Ensure muted
-    }
-  }, [myVideoRef.current]);
 
   // Initial call to getUserMediaStream
   useEffect(() => {
@@ -410,13 +372,6 @@ const RoomPage = () => {
         if (remoteVideoRef.current) {
           remoteVideoRef.current.srcObject = remoteStreamRef.current;
 
-          // CRITICAL: Set remote video volume appropriately
-          if (state.speakerMode) {
-            remoteVideoRef.current.volume = 0.7; // Lower volume for speakers
-          } else {
-            remoteVideoRef.current.volume = 1.0; // Full volume for headphones
-          }
-
           // Small delay to avoid AbortError
           clearTimeout(playTimeout);
           playTimeout = setTimeout(() => {
@@ -426,7 +381,7 @@ const RoomPage = () => {
                 if (err.name !== "AbortError") console.error("❌ Error playing remote video:", err);
               });
             }
-          }, 50);
+          }, 50); // 50ms delay is enough
         }
       }
     };
@@ -436,7 +391,7 @@ const RoomPage = () => {
       peer.removeEventListener("track", handleTrackEvent);
       clearTimeout(playTimeout);
     };
-  }, [peer, state.speakerMode]);
+  }, [peer]);
 
   // If remote video is not received yet, retry connecting after 1 second
   useEffect(() => {
@@ -465,9 +420,6 @@ const RoomPage = () => {
   useEffect(() => {
     if (myVideoRef.current && state.myStream) {
       myVideoRef.current.srcObject = state.myStream;
-      // CRITICAL: Keep local video muted to prevent echo
-      myVideoRef.current.volume = 0;
-      myVideoRef.current.muted = true;
     }
   }, [state.myStream]);
 
@@ -475,17 +427,14 @@ const RoomPage = () => {
   useEffect(() => {
     if (remoteVideoRef.current && remoteStreamRef.current) {
       remoteVideoRef.current.srcObject = remoteStreamRef.current;
-      // Adjust volume based on mode
-      if (state.speakerMode) {
-        remoteVideoRef.current.volume = 0.7;
-      }
     }
-  }, [remoteStreamRef.current, state.speakerMode]);
+  }, [remoteStreamRef.current]);
 
   //  -------------------Copy Meeting Link---------------------------------
   const copyMeetingLink = async () => {
     const link = `${window.location.origin}/room/${roomId}`;
     
+    // Updated message for production
     const message = `📹 Join my video meeting on MeetNow\n\n🔑 Room ID: ${roomId}\n🔗 Link: ${link}\n🌐 Live on: ${window.location.origin}`;
 
     try {
@@ -538,9 +487,12 @@ const RoomPage = () => {
       console.log("🛑 Local media tracks stopped");
     }
 
-    // Cleanup
-    if (mediaStreamRef.current) {
-      mediaStreamRef.current.getTracks().forEach(track => track.stop());
+    // Cleanup audio processing
+    if (audioProcessorRef.current) {
+      audioProcessorRef.current.disconnect();
+    }
+    if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
+      audioContextRef.current.close();
     }
 
     // Reset remote video
@@ -737,48 +689,31 @@ const RoomPage = () => {
   const toggleHandfree = async () => {
     if (!remoteVideoRef.current || !state.myStream) return;
 
-    const newSpeakerMode = !state.speakerMode;
-    
-    if (newSpeakerMode && state.handfreeDeviceId) {
-      // Switch to speaker mode - REDUCE volume to prevent echo
+    if (!state.usingHandfree && state.handfreeDeviceId) {
+      // Switch to speaker mode
       try {
         await remoteVideoRef.current.setSinkId(state.handfreeDeviceId);
-        remoteVideoRef.current.volume = 0.7; // CRITICAL: Lower volume
         
-        toast.custom(
-          (t) => (
-            <div className="bg-yellow-900 w-72 shadow-2xl text-white p-4 font-sans rounded-xl flex flex-col">
-              <div className="flex items-center gap-2">
-                <Volume2 className="w-5 h-5 text-yellow-400" />
-                <span className="font-semibold">Speaker Mode ON</span>
-              </div>
-              <div className="mt-2 text-sm opacity-90">
-                Keep speakers at low volume to prevent echo
-              </div>
-            </div>
-          ),
-          { duration: 4000 },
-        );
+        // DO NOT mute microphone - browser handles echo cancellation
+        dispatch({ type: "TOGGLE_HANDFREE" });
+        toast("Speaker Mode ON", { 
+          icon: "🔊",
+          duration: 3000 
+        });
       } catch (err) {
         console.error("Failed to switch to speaker:", err);
         toast.error("Failed to switch to speaker mode");
       }
     } else {
-      // Switch to headphone mode - NORMAL volume
+      // Switch back to normal mode
       try {
-        await remoteVideoRef.current.setSinkId('');
-        remoteVideoRef.current.volume = 1.0;
-        
-        toast("Headphone Mode ON - Echo Free", { 
-          icon: "🎧",
-          duration: 3000 
-        });
+        await remoteVideoRef.current.setSinkId("");
+        dispatch({ type: "TOGGLE_HANDFREE" });
+        toast("Headphone Mode ON", { icon: "🎧" });
       } catch (err) {
         console.error("Failed to switch to headphones:", err);
       }
     }
-    
-    dispatch({ type: "SET_SPEAKER_MODE", payload: newSpeakerMode });
   };
 
   // ------------------ Enhanced Audio Controls ------------------
@@ -855,11 +790,6 @@ const RoomPage = () => {
   // ------------------ Select Audio Device ------------------
   const selectAudioDevice = async (deviceId) => {
     try {
-      // Stop current tracks
-      if (mediaStreamRef.current) {
-        mediaStreamRef.current.getTracks().forEach(track => track.stop());
-      }
-      
       // Get current video constraints
       const videoTrack = state.myStream?.getVideoTracks()[0];
       const videoConstraints = videoTrack ? videoTrack.getSettings() : true;
@@ -867,21 +797,14 @@ const RoomPage = () => {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: { 
           deviceId: { exact: deviceId },
-          echoCancellation: { exact: true },
-          noiseSuppression: { exact: true }
+          echoCancellation: true,
+          noiseSuppression: true
         },
         video: videoConstraints
       });
       
-      mediaStreamRef.current = stream;
       dispatch({ type: "SET_MY_STREAM", payload: stream });
       dispatch({ type: "SELECT_AUDIO_DEVICE", payload: deviceId });
-      
-      // Mute local video
-      if (myVideoRef.current) {
-        myVideoRef.current.volume = 0;
-        myVideoRef.current.muted = true;
-      }
       
       // Update peer connection with new stream
       if (sendStream) {
@@ -970,11 +893,13 @@ const RoomPage = () => {
     console.log("Remote Stream:", remoteStreamRef.current);
     console.log("My Stream:", state.myStream);
     console.log("Socket Connected:", socket?.connected);
-    console.log("Speaker Mode:", state.speakerMode);
+    console.log("Audio Processing Active:", state.audioProcessingActive);
+    console.log("Echo Cancellation:", state.echoCancellationEnabled);
+    console.log("Noise Suppression:", state.noiseSuppressionEnabled);
     console.log("=========================");
   };
 
-  // UI/UX Design
+  // UI/UX Design - SAME AS BEFORE (unchanged)
   return (
     <div className="min-h-screen text-white flex bg-gradient-to-br from-gray-900 via-black to-blue-900">
       {/* Header Inside Status & Clock */}
@@ -1169,10 +1094,10 @@ const RoomPage = () => {
 
         <div
           onClick={toggleHandfree}
-          className={`p-3 rounded-full bg-[#364355] hover:bg-[#2e4361] cursor-pointer ${state.speakerMode ? "bg-yellow-700" : ""} `}
-          title={state.speakerMode ? "Speaker Mode ON" : "Headphone Mode"}
+          className={`p-3 rounded-full bg-[#364355] hover:bg-[#2e4361] cursor-pointer ${state.usingHandfree ? "bg-gray-900" : ""} `}
+          title="Toggle Speaker/Headphone Mode"
         >
-          {state.speakerMode ? <Volume2 /> : <Headphones />}
+          {state.usingHandfree ? <Headphones /> : <Volume2 />}
         </div>
 
         {/* Enhanced Audio Controls */}
