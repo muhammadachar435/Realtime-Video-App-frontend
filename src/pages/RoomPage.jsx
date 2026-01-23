@@ -52,8 +52,9 @@ const RoomPage = () => {
       audioDevices: [],
       selectedAudioDevice: null,
       audioProcessingActive: true,
+      isCameraSwitching: false,
     }),
-    [],
+    []
   );
 
   // useReducer
@@ -129,7 +130,7 @@ const RoomPage = () => {
         console.error("❌ Error creating answer:", err);
       }
     },
-    [createAnswer, socket, state.streamReady, setRemoteSocketId],
+    [createAnswer, socket, state.streamReady, setRemoteSocketId]
   );
 
   // ------------------ New User Joined ------------------
@@ -166,7 +167,7 @@ const RoomPage = () => {
         console.error("❌ Error creating offer:", err);
       }
     },
-    [createOffer, socket, state.streamReady, setRemoteSocketId],
+    [createOffer, socket, state.streamReady, setRemoteSocketId]
   );
 
   // ------------------ Call Accepted ------------------
@@ -180,7 +181,7 @@ const RoomPage = () => {
         console.error("❌ Error setting remote answer:", err);
       }
     },
-    [setRemoteAns],
+    [setRemoteAns]
   );
 
   // ------------------ Local Media ------------------
@@ -271,6 +272,9 @@ const RoomPage = () => {
           });
 
           dispatch({ type: "SET_MY_STREAM", payload: fallbackStream });
+          if (myVideoRef.current) {
+            myVideoRef.current.srcObject = fallbackStream;
+          }
           await sendStream(fallbackStream);
           dispatch({ type: "SET_STREAM_READY", payload: true });
           dispatch({ type: "SET_AUDIO_PROCESSING_ACTIVE", payload: true });
@@ -641,152 +645,175 @@ const RoomPage = () => {
     }, 1000);
   };
 
-  // ------------------ Socket Events ------------------
-  useEffect(() => {
-    if (!socket) return;
-
-    console.log("🔌 Socket connected, setting up listeners...");
-
-    socket.on("joined-room", () => {
-      dispatch({ type: "SET_HAS_JOINED_ROOM", payload: true });
-      console.log("✅ Joined room successfully");
-    });
-
-    socket.on("user-joined", handleNewUserJoined);
-
-    socket.on("incoming-call", handleIncomingCall);
-
-    socket.on("call-accepted", handleCallAccepted);
-
-    socket.on("chat-message", (data) => {
-      // Add to chat
-      dispatch({ type: "ADD_MESSAGE", payload: data });
-
-      // Show toast for messages from others
-      if (data.from !== socket.id) {
-        // Use data.senderName that comes from backend
-        toast.custom(
-          (t) => (
-            <div className="bg-green-800 shadow-2xl text-white p-4 rounded-xl flex items-center gap-2 z-50">
-              <MessageSquareText className="w-5 h-5" />
-              <span>
-                {data.senderName || "Guest"}: {data.text}
-              </span>
-            </div>
-          ),
-          { duration: 3000 },
-        );
-      }
-    });
-
-    // user-left
-    socket.on("user-left", ({ socketId }) => {
-      pendingIncomingCall.current = null;
-      remoteSocketIdRef.current = null;
-      console.log("🚪 User left:", socketId);
-
-      // Stop and reset remote video
-      if (remoteVideoRef.current && remoteVideoRef.current.srcObject) {
-        remoteVideoRef.current.srcObject.getTracks().forEach((t) => t.stop());
-        remoteVideoRef.current.srcObject = null;
+  // ------------------ Camera Toggle ------------------
+  const toggleCamera = async () => {
+    if (state.isCameraSwitching) return;
+    
+    try {
+      dispatch({ type: "SET_CAMERA_SWITCHING", payload: true });
+      
+      if (!state.myStream) {
+        toast.error("No media stream available");
+        return;
       }
 
-      // Reset remote stream reference
-      remoteStreamRef.current = null;
+      const newCameraState = !state.cameraOn;
+      console.log("📷 Toggling camera. Current state:", state.cameraOn, "New state:", newCameraState);
 
-      // Show toast for call duration when remote user leaves
-      if (state.isCallActive) {
-        const callDuration = getCallDurationText();
-        toast.custom(
-          (t) => (
-            <div className="bg-blue-900 w-72 shadow-2xl text-white p-4 font-sans rounded-xl flex flex-col">
-              <div className="flex items-center gap-2">
-                <CircleAlert className="w-5 h-5 text-yellow-400" />
-                <span className="font-semibold">User Disconnected</span>
-              </div>
-              <div className="mt-2 text-sm opacity-90">
-                Call duration: <span className="font-bold">{callDuration}</span>
-              </div>
-            </div>
-          ),
-          { duration: 5000 },
-        );
+      if (newCameraState) {
+        // Turn camera ON
+        console.log("🔄 Turning camera ON...");
+        
+        // Get current audio constraints
+        const audioTrack = state.myStream.getAudioTracks()[0];
+        const audioConstraints = audioTrack ? audioTrack.getSettings() : {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        };
+
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({
+            video: {
+              width: { ideal: 1280 },
+              height: { ideal: 720 },
+              facingMode: "user",
+            },
+            audio: audioConstraints
+          });
+
+          // Update local stream
+          dispatch({ type: "SET_MY_STREAM", payload: stream });
+          
+          // Update local video element
+          if (myVideoRef.current) {
+            myVideoRef.current.srcObject = stream;
+          }
+          
+          // Send new stream to peer
+          if (sendStream) {
+            await sendStream(stream);
+            console.log("✅ New stream sent to peer");
+          }
+          
+          dispatch({ type: "SET_CAMERA_ON", payload: true });
+        } catch (err) {
+          console.error("❌ Error turning camera ON:", err);
+          toast.error("Failed to turn camera ON");
+          return;
+        }
+      } else {
+        // Turn camera OFF
+        console.log("🔄 Turning camera OFF...");
+        
+        // Stop video tracks
+        const videoTracks = state.myStream.getVideoTracks();
+        videoTracks.forEach(track => {
+          track.stop();
+        });
+        
+        // Create new stream with only audio
+        const audioTrack = state.myStream.getAudioTracks()[0];
+        const newStream = new MediaStream();
+        if (audioTrack) {
+          newStream.addTrack(audioTrack);
+        }
+        
+        dispatch({ type: "SET_MY_STREAM", payload: newStream });
+        dispatch({ type: "SET_CAMERA_ON", payload: false });
+        
+        // Update peer with audio-only stream
+        if (sendStream) {
+          await sendStream(newStream);
+          console.log("✅ Audio-only stream sent to peer");
+        }
       }
-
-      // Reset remote-related state
-      dispatch({ type: "SET_REMOTE_NAME", payload: null });
-      dispatch({ type: "SET_REMOTE_EMAIL", payload: null });
-      dispatch({ type: "SET_REMOTE_CAMERA", payload: false });
-      dispatch({ type: "SET_REMOTEVIDEOREADY", payload: false });
-
-      // End the call
-      dispatch({ type: "END_CALL" });
-    });
-
-    // Socket error handling
-    socket.on("connect_error", (error) => {
-      console.error("❌ Socket connection error:", error);
-      toast.error("Connection error. Please refresh.");
-    });
-
-    return () => {
-      console.log("🧹 Cleaning up socket listeners...");
-      socket.off("joined-room");
-      socket.off("user-joined", handleNewUserJoined);
-      socket.off("incoming-call", handleIncomingCall);
-      socket.off("call-accepted", handleCallAccepted);
-      socket.off("chat-message");
-      socket.off("user-left");
-      socket.off("connect_error");
-    };
-  }, [socket, handleNewUserJoined, handleIncomingCall, handleCallAccepted, state.isCallActive]);
-
-  // ------------------ Camera, Mic, Handfree ------------------
-
-  // ------------------ toggleCamera ------------------
-  const toggleCamera = () => {
-    if (!state.myStream) return;
-
-    const newCameraState = !state.cameraOn;
-
-    // enable / disable camera track
-    state.myStream.getVideoTracks().forEach((track) => (track.enabled = newCameraState));
-
-    // update my own state
-    dispatch({ type: "TOGGLE_CAMERA" });
-
-    // send ONLY to other user in room
-    socket.emit("camera-toggle", {
-      cameraOn: newCameraState,
-      roomId,
-    });
-
-    toast(newCameraState ? "Camera ON" : "Camera OFF", {
-      icon: newCameraState ? "📹" : "📵",
-    });
+      
+      // Update camera state
+      dispatch({ type: "TOGGLE_CAMERA" });
+      
+      // Notify other user
+      if (socket && roomId) {
+        console.log("📡 Emitting camera-toggle event to socket");
+        socket.emit("camera-toggle", {
+          cameraOn: newCameraState,
+          roomId,
+          socketId: socket.id,
+        });
+      }
+      
+      // Show toast
+      toast(newCameraState ? "Camera ON" : "Camera OFF", {
+        icon: newCameraState ? "📹" : "📵",
+        duration: 1000,
+      });
+      
+    } catch (err) {
+      console.error("❌ Error in toggleCamera:", err);
+      toast.error("Failed to toggle camera");
+    } finally {
+      dispatch({ type: "SET_CAMERA_SWITCHING", payload: false });
+    }
   };
 
-  //   ----------------- ToggleCamera ---------------------
-  // This code listens for the other user's camera ON/OFF and updates the screen
+  //   ----------------- Remote Camera Toggle ---------------------
   useEffect(() => {
     if (!socket) return;
 
-    const handleCameraToggle = ({ cameraOn }) => {
-      console.log("Remote Camera on:", cameraOn);
-      dispatch({ type: "SET_REMOTE_CAMERA", payload: cameraOn });
+    const handleCameraToggle = ({ cameraOn, socketId }) => {
+      console.log("📡 Received remote camera toggle event:", { cameraOn, socketId });
+      
+      // Only update if it's from remote user (not our own event)
+      if (socketId !== socket.id) {
+        dispatch({ type: "SET_REMOTE_CAMERA", payload: cameraOn });
+        console.log("✅ Updated remote camera state to:", cameraOn);
+        
+        // Show notification
+        toast(`Remote user ${cameraOn ? 'turned ON' : 'turned OFF'} camera`, {
+          icon: cameraOn ? '📹' : '📵',
+          duration: 2000,
+        });
+      }
     };
 
     socket.on("camera-toggle", handleCameraToggle);
+    
+    // Send initial camera state when joining
+    const sendInitialCameraState = () => {
+      if (socket && roomId) {
+        socket.emit("camera-state-sync", {
+          roomId,
+          cameraOn: state.cameraOn,
+          socketId: socket.id
+        });
+      }
+    };
 
-    return () => socket.off("camera-toggle", handleCameraToggle);
-  }, [socket]);
+    // Listen for camera state sync
+    socket.on("camera-state-sync", ({ cameraOn, socketId }) => {
+      if (socketId !== socket.id) {
+        dispatch({ type: "SET_REMOTE_CAMERA", payload: cameraOn });
+      }
+    });
+
+    // Send initial state after a delay
+    const timer = setTimeout(sendInitialCameraState, 1000);
+
+    return () => {
+      socket.off("camera-toggle", handleCameraToggle);
+      socket.off("camera-state-sync");
+      clearTimeout(timer);
+    };
+  }, [socket, roomId, state.cameraOn]);
 
   // --------------- toggleMic ----------------------
   const toggleMic = () => {
     if (!state.myStream) return;
 
     const newMicState = !state.micOn;
-    state.myStream.getAudioTracks().forEach((t) => {
+    const audioTracks = state.myStream.getAudioTracks();
+    
+    audioTracks.forEach((t) => {
       t.enabled = newMicState;
       // Apply echo cancellation when enabling mic
       if (newMicState) {
@@ -922,6 +949,106 @@ const RoomPage = () => {
     });
   };
 
+  // ------------------ Socket Events ------------------
+  useEffect(() => {
+    if (!socket) return;
+
+    console.log("🔌 Socket connected, setting up listeners...");
+
+    socket.on("joined-room", () => {
+      dispatch({ type: "SET_HAS_JOINED_ROOM", payload: true });
+      console.log("✅ Joined room successfully");
+    });
+
+    socket.on("user-joined", handleNewUserJoined);
+
+    socket.on("incoming-call", handleIncomingCall);
+
+    socket.on("call-accepted", handleCallAccepted);
+
+    socket.on("chat-message", (data) => {
+      // Add to chat
+      dispatch({ type: "ADD_MESSAGE", payload: data });
+
+      // Show toast for messages from others
+      if (data.from !== socket.id) {
+        // Use data.senderName that comes from backend
+        toast.custom(
+          (t) => (
+            <div className="bg-green-800 shadow-2xl text-white p-4 rounded-xl flex items-center gap-2 z-50">
+              <MessageSquareText className="w-5 h-5" />
+              <span>
+                {data.senderName || "Guest"}: {data.text}
+              </span>
+            </div>
+          ),
+          { duration: 3000 }
+        );
+      }
+    });
+
+    // user-left
+    socket.on("user-left", ({ socketId }) => {
+      pendingIncomingCall.current = null;
+      remoteSocketIdRef.current = null;
+      console.log("🚪 User left:", socketId);
+
+      // Stop and reset remote video
+      if (remoteVideoRef.current && remoteVideoRef.current.srcObject) {
+        remoteVideoRef.current.srcObject.getTracks().forEach((t) => t.stop());
+        remoteVideoRef.current.srcObject = null;
+      }
+
+      // Reset remote stream reference
+      remoteStreamRef.current = null;
+
+      // Show toast for call duration when remote user leaves
+      if (state.isCallActive) {
+        const callDuration = getCallDurationText();
+        toast.custom(
+          (t) => (
+            <div className="bg-blue-900 w-72 shadow-2xl text-white p-4 font-sans rounded-xl flex flex-col">
+              <div className="flex items-center gap-2">
+                <CircleAlert className="w-5 h-5 text-yellow-400" />
+                <span className="font-semibold">User Disconnected</span>
+              </div>
+              <div className="mt-2 text-sm opacity-90">
+                Call duration: <span className="font-bold">{callDuration}</span>
+              </div>
+            </div>
+          ),
+          { duration: 5000 }
+        );
+      }
+
+      // Reset remote-related state
+      dispatch({ type: "SET_REMOTE_NAME", payload: null });
+      dispatch({ type: "SET_REMOTE_EMAIL", payload: null });
+      dispatch({ type: "SET_REMOTE_CAMERA", payload: false });
+      dispatch({ type: "SET_REMOTEVIDEOREADY", payload: false });
+
+      // End the call
+      dispatch({ type: "END_CALL" });
+    });
+
+    // Socket error handling
+    socket.on("connect_error", (error) => {
+      console.error("❌ Socket connection error:", error);
+      toast.error("Connection error. Please refresh.");
+    });
+
+    return () => {
+      console.log("🧹 Cleaning up socket listeners...");
+      socket.off("joined-room");
+      socket.off("user-joined", handleNewUserJoined);
+      socket.off("incoming-call", handleIncomingCall);
+      socket.off("call-accepted", handleCallAccepted);
+      socket.off("chat-message");
+      socket.off("user-left");
+      socket.off("connect_error");
+    };
+  }, [socket, handleNewUserJoined, handleIncomingCall, handleCallAccepted, state.isCallActive]);
+
   // ------------------ Detect Audio Devices ------------------
   useEffect(() => {
     const detectAudioDevices = async () => {
@@ -937,7 +1064,7 @@ const RoomPage = () => {
           dispatch({ type: "SET_HANDFREE_DEVICE", payload: audioOutputDevices[0].deviceId });
           console.log(
             "🔊 Available speakers:",
-            audioOutputDevices.map((s) => s.label),
+            audioOutputDevices.map((s) => s.label)
           );
         }
       } catch (err) {
@@ -1048,7 +1175,7 @@ const RoomPage = () => {
               </div>
             </div>
           ),
-          { duration: 3000 },
+          { duration: 3000 }
         );
       }
     };
@@ -1093,7 +1220,6 @@ const RoomPage = () => {
     console.log("=========================");
   };
 
-  // UI/UX Design - SAME AS BEFORE (unchanged)
   return (
     <div className="min-h-screen text-white flex bg-gradient-to-br from-gray-900 via-black to-blue-900">
       {/* Header Inside Status & Clock */}
@@ -1272,10 +1398,26 @@ const RoomPage = () => {
       <div className="fixed flex flex-wrap w-full max-w-92 sm:max-w-md justify-center place-items-center gap-2.5 sm:gap-4 bottom-6 left-1/2 z-10 -translate-x-1/2 bg-[#0b1018] backdrop-blur-lg sm:px-2 py-3 rounded-xl shadow-lg">
         <div
           onClick={toggleCamera}
-          className={`p-3 rounded-full bg-[#364355] hover:bg-[#2e4361] cursor-pointer ${state.cameraOn ? "bg-gray-900" : ""} `}
-          title="Toggle Camera"
+          disabled={state.isCameraSwitching}
+          className={`relative p-3 rounded-full cursor-pointer transition-all duration-300 ${
+            state.cameraOn 
+              ? 'bg-green-600 hover:bg-green-700' 
+              : 'bg-red-600 hover:bg-red-700'
+          } ${state.isCameraSwitching ? 'opacity-50 cursor-not-allowed' : ''}`}
+          title={state.cameraOn ? "Turn Camera OFF" : "Turn Camera ON"}
         >
-          {state.cameraOn ? <Camera /> : <CameraOff />}
+          {state.cameraOn ? (
+            <Camera className="w-5 h-5" />
+          ) : (
+            <CameraOff className="w-5 h-5" />
+          )}
+          
+          {/* Loading indicator */}
+          {state.isCameraSwitching && (
+            <div className="absolute inset-0 flex items-center justify-center">
+              <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-white"></div>
+            </div>
+          )}
         </div>
 
         <div
@@ -1376,4 +1518,3 @@ const RoomPage = () => {
 };
 
 export default RoomPage;
-
