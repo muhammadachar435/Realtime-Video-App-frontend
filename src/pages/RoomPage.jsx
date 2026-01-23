@@ -908,16 +908,6 @@ const RoomPage = () => {
     });
   };
 
-  // Toggle audio processing
-  const toggleAudioProcessing = () => {
-    const newAudioProcessingState = !state.audioProcessingActive;
-    dispatch({ type: "SET_AUDIO_PROCESSING_ACTIVE", payload: newAudioProcessingState });
-    
-    toast(newAudioProcessingState ? "Audio Processing ON" : "Audio Processing OFF", {
-      icon: newAudioProcessingState ? "🎚️" : "🔇"
-    });
-  };
-
   // ------------------ Detect Audio Devices ------------------
   useEffect(() => {
     const detectAudioDevices = async () => {
@@ -1302,14 +1292,6 @@ const RoomPage = () => {
           title="Toggle Noise Suppression"
         >
           <Mic className="w-5 h-5" />
-        </div>
-
-        <div
-          onClick={toggleAudioProcessing}
-          className={`p-3 rounded-full ${state.audioProcessingActive ? 'bg-green-700' : 'bg-[#364355]'} hover:bg-[#2e4361] cursor-pointer`}
-          title="Toggle Audio Processing"
-        >
-          <Volume2 className="w-5 h-5" />
         </div>
 
         <div
