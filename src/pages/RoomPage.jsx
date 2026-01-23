@@ -32,6 +32,8 @@ import {
   FlipHorizontal,
   VolumeX,
   Headset,
+  Activity,
+  Settings,
 } from "lucide-react";
 
 // import toast to display Notification
@@ -46,7 +48,7 @@ const RoomPage = () => {
   // RoomID
   const { roomId } = useParams();
 
-  // Enhanced initialState - Add missing properties
+  // Enhanced initialState - Uses all properties from updated reducer
   const enhancedInitialState = useMemo(() => ({
     ...initialState,
     echoCancellationEnabled: true,
@@ -55,10 +57,16 @@ const RoomPage = () => {
     selectedAudioDevice: null,
     audioProcessingActive: false,
     mirrorSelfView: true,
-    volumeLevel: 0.5, // NEW
-    usingHeadphones: false, // NEW
-    autoMuteWhenSpeaking: false, // NEW
-    isRemoteSpeaking: false, // NEW
+    volumeLevel: 0.5,
+    usingHeadphones: false,
+    isRemoteSpeaking: false,
+    autoMuteWhenSpeaking: false,
+    vadEnabled: true,
+    noiseGateLevel: 0.15,
+    audioVolume: 0.7,
+    isSpeaking: false,
+    noiseGateThreshold: 0.1,
+    voiceActivityDetection: true,
   }), []);
 
   // useReducer
@@ -75,8 +83,10 @@ const RoomPage = () => {
   const remoteAudioAnalyserRef = useRef(null);
   const gainNodeRef = useRef(null);
   const echoCheckIntervalRef = useRef(null);
+  const vadIntervalRef = useRef(null);
   const [detectedFeedback, setDetectedFeedback] = useState(false);
   const [showVolumeSlider, setShowVolumeSlider] = useState(false);
+  const [showAudioSettings, setShowAudioSettings] = useState(false);
 
   // totalUsers
   const totalUsers = useMemo(() => (state.remoteName ? 2 : 1), [state.remoteName]);
@@ -119,6 +129,20 @@ const RoomPage = () => {
   const adjustVolume = (level) => {
     dispatch({ type: "SET_VOLUME_LEVEL", payload: level });
     toast(`Volume: ${Math.round(level * 100)}%`, { duration: 1000 });
+  };
+
+  // ------------------ Toggle VAD ------------------
+  const toggleVAD = () => {
+    const newVADState = !state.vadEnabled;
+    dispatch({ type: "SET_VAD_ENABLED", payload: newVADState });
+    toast(newVADState ? "Noise Gate ON" : "Noise Gate OFF", {
+      duration: 1000,
+    });
+  };
+
+  // ------------------ Adjust Noise Gate ------------------
+  const adjustNoiseGate = (level) => {
+    dispatch({ type: "SET_NOISE_GATE_LEVEL", payload: level });
   };
 
   // ------------------ ECHO DETECTION & PREVENTION ------------------
@@ -201,31 +225,71 @@ const RoomPage = () => {
     };
   }, [state.myStream, remoteStreamRef.current, state.micOn, state.volumeLevel]);
 
+  // ------------------ VOICE ACTIVITY DETECTION ------------------
+  useEffect(() => {
+    if (!state.myStream || !state.vadEnabled) return;
+
+    const setupVAD = () => {
+      try {
+        if (!audioContextRef.current) {
+          audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)();
+        }
+
+        const source = audioContextRef.current.createMediaStreamSource(state.myStream);
+        const analyser = audioContextRef.current.createAnalyser();
+        analyser.fftSize = 256;
+        source.connect(analyser);
+
+        const dataArray = new Uint8Array(analyser.frequencyBinCount);
+        let speakingCounter = 0;
+
+        vadIntervalRef.current = setInterval(() => {
+          analyser.getByteFrequencyData(dataArray);
+          
+          // Calculate average volume
+          let sum = 0;
+          for (let i = 0; i < dataArray.length; i++) {
+            sum += dataArray[i];
+          }
+          const average = sum / dataArray.length;
+          const normalizedVolume = average / 255;
+
+          // Voice detection
+          const isSpeakingNow = normalizedVolume > state.noiseGateLevel;
+          
+          if (isSpeakingNow) {
+            speakingCounter++;
+            if (speakingCounter > 2 && !state.isSpeaking) {
+              dispatch({ type: "SET_SPEAKING", payload: true });
+            }
+          } else {
+            speakingCounter = 0;
+            if (state.isSpeaking) {
+              dispatch({ type: "SET_SPEAKING", payload: false });
+            }
+          }
+        }, 100);
+      } catch (err) {
+        console.log("VAD setup error:", err);
+      }
+    };
+
+    setupVAD();
+
+    return () => {
+      if (vadIntervalRef.current) {
+        clearInterval(vadIntervalRef.current);
+      }
+    };
+  }, [state.myStream, state.vadEnabled, state.noiseGateLevel, state.isSpeaking]);
+
   // ------------------ Apply Volume to Remote Audio ------------------
   useEffect(() => {
     if (!remoteVideoRef.current) return;
 
     // Set volume on remote video element
     remoteVideoRef.current.volume = state.volumeLevel || 0.5;
-    
-    // Apply Web Audio API volume control
-    if (remoteStreamRef.current && audioContextRef.current) {
-      try {
-        const remoteSource = audioContextRef.current.createMediaStreamSource(remoteStreamRef.current);
-        if (!gainNodeRef.current) {
-          gainNodeRef.current = audioContextRef.current.createGain();
-        }
-        gainNodeRef.current.gain.value = state.volumeLevel || 0.5;
-        
-        const destination = audioContextRef.current.createMediaStreamDestination();
-        remoteSource.connect(gainNodeRef.current);
-        gainNodeRef.current.connect(destination);
-        
-      } catch (err) {
-        console.log("Volume control error:", err);
-      }
-    }
-  }, [state.volumeLevel, remoteStreamRef.current]);
+  }, [state.volumeLevel]);
 
   // ------------------ Incoming Call ------------------
   const handleIncomingCall = useCallback(
@@ -323,18 +387,18 @@ const RoomPage = () => {
         },
         audio: { 
           // CRITICAL: Strong echo cancellation
-          echoCancellation: { ideal: true, exact: true },
-          noiseSuppression: { ideal: true, exact: true },
-          autoGainControl: { ideal: true, exact: true },
+          echoCancellation: { ideal: true },
+          noiseSuppression: { ideal: true },
+          autoGainControl: { ideal: true },
           
           // Lower latency = less echo
-          latency: { ideal: 0.01, max: 0.02 },
+          latency: { ideal: 0.01 },
           
           // Mono = simpler processing
-          channelCount: { ideal: 1, max: 1 },
+          channelCount: { ideal: 1 },
           
           // Volume control
-          volume: { ideal: 0.5, max: 0.7 },
+          volume: { ideal: 0.5 },
           
           // Browser optimizations
           googEchoCancellation: true,
@@ -376,8 +440,6 @@ const RoomPage = () => {
           noiseSuppression: settings.noiseSuppression,
           autoGainControl: settings.autoGainControl,
           channelCount: settings.channelCount,
-          sampleRate: settings.sampleRate,
-          latency: settings.latency
         });
 
         // Force critical constraints
@@ -389,50 +451,6 @@ const RoomPage = () => {
           });
         } catch (err) {
           console.warn("Could not force constraints:", err);
-        }
-
-        // Setup Web Audio API for noise gate
-        try {
-          const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-          const source = audioContext.createMediaStreamSource(stream);
-          const analyser = audioContext.createAnalyser();
-          const gainNode = audioContext.createGain();
-          
-          analyser.fftSize = 256;
-          analyser.smoothingTimeConstant = 0.8;
-          source.connect(analyser);
-          source.connect(gainNode);
-          
-          const destination = audioContext.createMediaStreamDestination();
-          gainNode.connect(destination);
-          
-          // Noise gate: auto-mute when quiet
-          const dataArray = new Uint8Array(analyser.frequencyBinCount);
-          const checkVolume = () => {
-            if (!analyser) return;
-            
-            analyser.getByteFrequencyData(dataArray);
-            const avg = dataArray.reduce((a, b) => a + b) / dataArray.length;
-            
-            // Mute when volume < threshold (15)
-            if (avg < 15) {
-              gainNode.gain.setTargetAtTime(0.001, audioContext.currentTime, 0.05);
-            } else {
-              gainNode.gain.setTargetAtTime(1.0, audioContext.currentTime, 0.05);
-            }
-            
-            requestAnimationFrame(checkVolume);
-          };
-          checkVolume();
-          
-          // Replace original track with processed one
-          const processedTrack = destination.stream.getAudioTracks()[0];
-          stream.removeTrack(audioTrack);
-          stream.addTrack(processedTrack);
-          
-          console.log("✅ Noise gate applied");
-        } catch (err) {
-          console.log("Noise gate setup failed:", err);
         }
       }
 
@@ -486,6 +504,9 @@ const RoomPage = () => {
     return () => {
       if (echoCheckIntervalRef.current) {
         clearInterval(echoCheckIntervalRef.current);
+      }
+      if (vadIntervalRef.current) {
+        clearInterval(vadIntervalRef.current);
       }
       if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
         audioContextRef.current.close();
@@ -691,6 +712,9 @@ const RoomPage = () => {
     // Cleanup
     if (echoCheckIntervalRef.current) {
       clearInterval(echoCheckIntervalRef.current);
+    }
+    if (vadIntervalRef.current) {
+      clearInterval(vadIntervalRef.current);
     }
 
     // Stop all local tracks
@@ -1066,6 +1090,66 @@ const RoomPage = () => {
     );
   };
 
+  // ------------------ Audio Settings Component ------------------
+  const AudioSettings = () => {
+    if (!showAudioSettings) return null;
+
+    return (
+      <div className="fixed bottom-24 right-4 bg-gray-800 p-4 rounded-xl shadow-2xl z-50 w-72">
+        <div className="flex justify-between items-center mb-4">
+          <h3 className="font-semibold">Audio Settings</h3>
+          <button 
+            onClick={() => setShowAudioSettings(false)} 
+            className="text-gray-400 hover:text-white"
+          >
+            <X size={18} />
+          </button>
+        </div>
+        
+        <div className="space-y-4">
+          {/* Noise Gate Sensitivity */}
+          <div>
+            <div className="flex justify-between mb-1">
+              <span className="text-sm">Noise Gate</span>
+              <span className={`text-xs ${state.vadEnabled ? 'text-green-400' : 'text-gray-400'}`}>
+                {state.vadEnabled ? 'ON' : 'OFF'}
+              </span>
+            </div>
+            <input
+              type="range"
+              min="0.05"
+              max="0.3"
+              step="0.01"
+              value={state.noiseGateLevel || 0.15}
+              onChange={(e) => adjustNoiseGate(parseFloat(e.target.value))}
+              className="w-full h-2 bg-blue-600 rounded-lg"
+            />
+            <div className="text-xs text-gray-400 mt-1">
+              Sensitivity: {Math.round((state.noiseGateLevel || 0.15) * 100)}%
+              {state.isSpeaking && <span className="ml-2 text-green-400">• Speaking</span>}
+            </div>
+          </div>
+
+          {/* VAD Toggle */}
+          <button
+            onClick={toggleVAD}
+            className={`w-full py-2 rounded-lg ${state.vadEnabled ? 'bg-green-700 hover:bg-green-600' : 'bg-gray-700 hover:bg-gray-600'}`}
+          >
+            {state.vadEnabled ? 'Disable Noise Gate' : 'Enable Noise Gate'}
+          </button>
+
+          {/* Audio Info */}
+          <div className="text-xs text-gray-400 pt-2 border-t border-gray-700">
+            <div>Echo Cancellation: {state.echoCancellationEnabled ? 'ON' : 'OFF'}</div>
+            <div>Noise Suppression: {state.noiseSuppressionEnabled ? 'ON' : 'OFF'}</div>
+            <div>Mic: {state.micOn ? 'ON' : 'OFF'}</div>
+            {detectedFeedback && <div className="text-red-400">⚠️ Echo detected</div>}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   // ------------------ UI ------------------
   return (
     <div className="min-h-screen text-white flex bg-gradient-to-br from-gray-900 via-black to-blue-900">
@@ -1186,6 +1270,13 @@ const RoomPage = () => {
               <VolumeX className="w-3 h-3 mr-1" /> Echo detected
             </div>
           )}
+
+          {/* Speaking Indicator */}
+          {state.isSpeaking && (
+            <div className="absolute bottom-2 right-2 z-40 bg-green-600/80 px-2 py-1 rounded-full text-xs flex items-center">
+              <Activity className="w-3 h-3 mr-1 animate-pulse" /> Speaking
+            </div>
+          )}
         </div>
       </div>
 
@@ -1247,6 +1338,9 @@ const RoomPage = () => {
       {/* Volume Slider */}
       <VolumeSlider />
 
+      {/* Audio Settings */}
+      <AudioSettings />
+
       {/* BOTTOM CONTROL BAR */}
       <div className="fixed flex flex-wrap w-full max-w-92 sm:max-w-md justify-center place-items-center gap-2.5 sm:gap-4 bottom-6 left-1/2 z-10 -translate-x-1/2 bg-[#0b1018] backdrop-blur-lg sm:px-2 py-3 rounded-xl shadow-lg">
         <div
@@ -1282,6 +1376,15 @@ const RoomPage = () => {
           <Volume2 className="w-5 h-5" />
         </div>
 
+        {/* Audio Settings */}
+        <div
+          onClick={() => setShowAudioSettings(!showAudioSettings)}
+          className={`p-3 rounded-full ${state.vadEnabled ? 'bg-green-700' : 'bg-[#364355]'} hover:bg-[#2e4361] cursor-pointer`}
+          title="Audio Settings"
+        >
+          <Settings className="w-5 h-5" />
+        </div>
+
         {/* Mirror Toggle */}
         <div
           onClick={toggleMirror}
@@ -1298,15 +1401,6 @@ const RoomPage = () => {
           title="Toggle Echo Cancellation"
         >
           <Ear className="w-5 h-5" />
-        </div>
-
-        {/* Noise Suppression */}
-        <div
-          onClick={toggleNoiseSuppression}
-          className={`p-3 rounded-full ${state.noiseSuppressionEnabled ? 'bg-green-700' : 'bg-[#364355]'} hover:bg-[#2e4361] cursor-pointer`}
-          title="Toggle Noise Suppression"
-        >
-          <Headset className="w-5 h-5" />
         </div>
 
         {/* Chat */}
