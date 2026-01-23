@@ -1181,6 +1181,26 @@ const RoomPage = () => {
     console.log("=========================");
   };
 
+  // Add this to RoomPage.js
+useEffect(() => {
+  if (!peer) return;
+
+  const handleConnectionFailed = () => {
+    if (peer.connectionState === "failed" || peer.iceConnectionState === "failed") {
+      console.log("❌ Connection failed, attempting to reconnect...");
+      resetPeerConnection();
+    }
+  };
+
+  peer.addEventListener('connectionstatechange', handleConnectionFailed);
+  peer.addEventListener('iceconnectionstatechange', handleConnectionFailed);
+
+  return () => {
+    peer.removeEventListener('connectionstatechange', handleConnectionFailed);
+    peer.removeEventListener('iceconnectionstatechange', handleConnectionFailed);
+  };
+}, [peer]);
+  
   // UI/UX Design
   return (
     <div className="min-h-screen text-white flex bg-gradient-to-br from-gray-900 via-black to-blue-900">
