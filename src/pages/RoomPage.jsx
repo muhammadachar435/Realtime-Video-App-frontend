@@ -310,7 +310,7 @@ const RoomPage = () => {
         source.connect(analyser);
 
         
-        Create noise suppressor node
+        // Create noise suppressor node
         const noiseSuppressor = audioContext.createScriptProcessor(4096, 1, 1);
 
         noiseSuppressor.onaudioprocess = function (event) {
