@@ -318,8 +318,7 @@ const RoomPage = () => {
           let sum = 0;
           for (let i = 0; i < input.length; i++) {
             sum += input[i] * input[i];
-          };
-
+          }
           const rms = Math.sqrt(sum / input.length);
           const threshold = 0.015; // Optimized threshold
 
