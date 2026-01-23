@@ -29,6 +29,7 @@ import {
   X,
   Users,
   Ear,
+  RefreshCw,
 } from "lucide-react";
 
 // import toast to display Notification
@@ -38,7 +39,7 @@ import toast, { Toaster } from "react-hot-toast";
 const RoomPage = () => {
   // Socket Destruction
   const { socket } = useSocket();
-  const { peer, createOffer, createAnswer, setRemoteAns, sendStream, setRemoteSocketId } = usePeer();
+  const { peer, createOffer, createAnswer, setRemoteAns, sendStream, setRemoteSocketId, resetPeerConnection } = usePeer();
 
   // RoomID
   const { roomId } = useParams();
@@ -69,6 +70,8 @@ const RoomPage = () => {
   const socketRef = useRef(socket);
   const peerRef = useRef(peer);
   const hasInitializedMedia = useRef(false);
+  const connectionRetryCount = useRef(0);
+  const MAX_CONNECTION_RETRIES = 3;
 
   // Update refs when values change
   useEffect(() => {
@@ -107,9 +110,48 @@ const RoomPage = () => {
     return durationText.trim();
   };
 
+  // Check if peer connection is valid
+  const isPeerConnectionValid = useCallback(() => {
+    return peer && 
+           peer.connectionState !== 'closed' && 
+           peer.signalingState !== 'closed';
+  }, [peer]);
+
+  // Ensure valid connection before operations
+  const ensureValidConnection = useCallback(async () => {
+    if (peer && (peer.connectionState === 'closed' || peer.signalingState === 'closed')) {
+      console.log("⚠️ Peer connection is closed, attempting to reset...");
+      
+      if (connectionRetryCount.current < MAX_CONNECTION_RETRIES) {
+        connectionRetryCount.current++;
+        
+        // Reset peer connection
+        if (resetPeerConnection) {
+          resetPeerConnection();
+        }
+        
+        // Wait for reconnection
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        
+        toast(`🔄 Reconnecting... Attempt ${connectionRetryCount.current}/${MAX_CONNECTION_RETRIES}`, {
+          duration: 2000,
+        });
+        
+        return false;
+      } else {
+        toast.error("Connection failed after multiple attempts");
+        return false;
+      }
+    }
+    return true;
+  }, [peer, resetPeerConnection]);
+
   // ------------------ Incoming Call ------------------
   const handleIncomingCall = useCallback(
     async ({ from, offer, fromName }) => {
+      // Reset retry counter
+      connectionRetryCount.current = 0;
+      
       dispatch({ type: "SET_REMOTE_EMAIL", payload: from });
       dispatch({ type: "SET_REMOTE_NAME", payload: fromName });
       
@@ -119,6 +161,13 @@ const RoomPage = () => {
         setRemoteSocketId(from);
       }
       console.log("📲 Incoming call from socket ID:", from);
+
+      // Ensure we have a valid connection
+      const isValid = await ensureValidConnection();
+      if (!isValid) {
+        console.log("❌ Connection invalid, cannot answer call");
+        return;
+      }
 
       if (!state.streamReady) {
         pendingIncomingCall.current = { from, offer, fromName };
@@ -136,14 +185,18 @@ const RoomPage = () => {
         console.log("📨 Answer sent to:", from);
       } catch (err) {
         console.error("❌ Error creating answer:", err);
+        toast.error("Failed to answer call. Please try reconnecting.");
       }
     },
-    [createAnswer, setRemoteSocketId, state.streamReady],
+    [createAnswer, setRemoteSocketId, state.streamReady, ensureValidConnection],
   );
 
   // ------------------ New User Joined ------------------
   const handleNewUserJoined = useCallback(
     async ({ emailId, name, socketId }) => {
+      // Reset retry counter
+      connectionRetryCount.current = 0;
+      
       // ALWAYS set remote name immediately
       dispatch({ type: "SET_REMOTE_EMAIL", payload: emailId });
       dispatch({ type: "SET_REMOTE_NAME", payload: name });
@@ -154,6 +207,13 @@ const RoomPage = () => {
         setRemoteSocketId(socketId);
       }
       console.log("✅ Remote socket ID stored:", socketId);
+
+      // Ensure we have a valid connection
+      const isValid = await ensureValidConnection();
+      if (!isValid) {
+        console.log("❌ Connection invalid, cannot create offer");
+        return;
+      }
 
       // Store pending call if stream is not ready
       if (!state.streamReady) {
@@ -173,9 +233,10 @@ const RoomPage = () => {
         console.log("📨 Offer sent to:", emailId);
       } catch (err) {
         console.error("❌ Error creating offer:", err);
+        toast.error("Failed to create call offer. Please try reconnecting.");
       }
     },
-    [createOffer, setRemoteSocketId, state.streamReady],
+    [createOffer, setRemoteSocketId, state.streamReady, ensureValidConnection],
   );
 
   // ------------------ Call Accepted ------------------
@@ -187,6 +248,7 @@ const RoomPage = () => {
         console.log("✅ Remote answer set successfully");
       } catch (err) {
         console.error("❌ Error setting remote answer:", err);
+        toast.error("Failed to accept call. Please try reconnecting.");
       }
     },
     [setRemoteAns],
@@ -258,10 +320,16 @@ const RoomPage = () => {
         console.log("✅ Local video stream attached");
       }
       
-      await sendStream(stream);
-      dispatch({ type: "SET_STREAM_READY", payload: true });
-      dispatch({ type: "SET_AUDIO_PROCESSING_ACTIVE", payload: true });
-      console.log("✅ Stream ready for WebRTC");
+      // Ensure peer is ready before sending stream
+      if (isPeerConnectionValid()) {
+        await sendStream(stream);
+        dispatch({ type: "SET_STREAM_READY", payload: true });
+        dispatch({ type: "SET_AUDIO_PROCESSING_ACTIVE", payload: true });
+        console.log("✅ Stream ready for WebRTC");
+      } else {
+        console.log("⚠️ Peer not ready, delaying stream send");
+        dispatch({ type: "SET_STREAM_READY", payload: true });
+      }
 
       // Handle pending incoming call automatically
       if (pendingIncomingCall.current) {
@@ -287,7 +355,11 @@ const RoomPage = () => {
           });
           
           dispatch({ type: "SET_MY_STREAM", payload: fallbackStream });
-          await sendStream(fallbackStream);
+          
+          if (isPeerConnectionValid()) {
+            await sendStream(fallbackStream);
+          }
+          
           dispatch({ type: "SET_STREAM_READY", payload: true });
           dispatch({ type: "SET_AUDIO_PROCESSING_ACTIVE", payload: true });
         } catch (fallbackErr) {
@@ -298,7 +370,7 @@ const RoomPage = () => {
         toast.error("Failed to access camera/microphone");
       }
     }
-  }, [sendStream, handleIncomingCall]);
+  }, [sendStream, handleIncomingCall, isPeerConnectionValid]);
 
   // Initial call to getUserMediaStream - ONLY ONCE
   useEffect(() => {
@@ -388,7 +460,7 @@ const RoomPage = () => {
         localAudioStreamRef.current = destination.stream;
         
         // Update peer with processed audio if stream is ready
-        if (peerRef.current && sendStream && state.streamReady) {
+        if (peer && sendStream && state.streamReady && isPeerConnectionValid()) {
           try {
             // Combine processed audio with video
             const processedStream = new MediaStream([
@@ -419,7 +491,7 @@ const RoomPage = () => {
         audioContextRef.current.close().catch(() => {});
       }
     };
-  }, [state.myStream, state.audioProcessingActive, sendStream, state.streamReady]);
+  }, [state.myStream, state.audioProcessingActive, sendStream, state.streamReady, peer, isPeerConnectionValid]);
 
   // ------------------ Debug WebRTC Connection ------------------
   useEffect(() => {
@@ -454,7 +526,7 @@ const RoomPage = () => {
     // Handle incoming ICE candidates
     const handleIncomingIceCandidate = ({ candidate, from }) => {
       console.log("📥 Received ICE candidate from:", from, candidate);
-      if (candidate && peer.remoteDescription) {
+      if (candidate && peer.remoteDescription && isPeerConnectionValid()) {
         peer.addIceCandidate(new RTCIceCandidate(candidate)).catch(err => {
           console.error("❌ Error adding ICE candidate:", err);
         });
@@ -463,7 +535,7 @@ const RoomPage = () => {
 
     // Handle local ICE candidate generation
     const handleLocalIceCandidate = (event) => {
-      if (event.candidate && remoteSocketIdRef.current && socket) {
+      if (event.candidate && remoteSocketIdRef.current && socket && isPeerConnectionValid()) {
         console.log("📤 Sending ICE candidate to:", remoteSocketIdRef.current, event.candidate);
         socket.emit("ice-candidate", {
           to: remoteSocketIdRef.current,
@@ -480,7 +552,7 @@ const RoomPage = () => {
     // Handle ICE connection state changes
     peer.oniceconnectionstatechange = () => {
       console.log("❄️ ICE Connection State:", peer.iceConnectionState);
-      if (peer.iceConnectionState === "failed") {
+      if (peer.iceConnectionState === "failed" && isPeerConnectionValid()) {
         console.log("🔄 ICE failed, trying to restart...");
         try {
           peer.restartIce();
@@ -497,7 +569,7 @@ const RoomPage = () => {
         peer.oniceconnectionstatechange = null;
       }
     };
-  }, [socket, peer]);
+  }, [socket, peer, isPeerConnectionValid]);
 
   // ------------------ Remote Track ------------------
   useEffect(() => {
@@ -525,12 +597,17 @@ const RoomPage = () => {
       }
     };
 
-    peer.addEventListener("track", handleTrackEvent);
+    if (peer && isPeerConnectionValid()) {
+      peer.addEventListener("track", handleTrackEvent);
+    }
+    
     return () => {
-      peer.removeEventListener("track", handleTrackEvent);
+      if (peer) {
+        peer.removeEventListener("track", handleTrackEvent);
+      }
       clearTimeout(playTimeout);
     };
-  }, [peer]);
+  }, [peer, isPeerConnectionValid]);
 
   // If remote video is not received yet, retry connecting after 1 second
   useEffect(() => {
@@ -664,6 +741,7 @@ const RoomPage = () => {
 
     // Reset initialization flag
     hasInitializedMedia.current = false;
+    connectionRetryCount.current = 0;
 
     // Redirect after a short delay to allow toast to show
     setTimeout(() => {
@@ -744,6 +822,7 @@ const RoomPage = () => {
 
       // End the call
       dispatch({ type: "END_CALL" });
+      connectionRetryCount.current = 0;
     };
 
     // Remove all listeners first to avoid duplicates
@@ -1018,7 +1097,7 @@ const RoomPage = () => {
       }
       
       // Update peer connection with new stream
-      if (sendStream) {
+      if (sendStream && isPeerConnectionValid()) {
         await sendStream(stream);
       }
       
@@ -1160,10 +1239,53 @@ const RoomPage = () => {
       remoteSocketIdRef.current = null;
       remoteStreamRef.current = null;
       hasInitializedMedia.current = false;
+      connectionRetryCount.current = 0;
     };
   }, [socket, roomId, peer, state.myStream]);
 
-  // Debug function (optional, can be removed)
+  // Connection monitoring for automatic reconnection
+  useEffect(() => {
+    if (!peer) return;
+
+    const monitorConnection = () => {
+      if ((peer.connectionState === 'closed' || peer.signalingState === 'closed') && 
+          state.remoteEmail && 
+          connectionRetryCount.current < MAX_CONNECTION_RETRIES) {
+        
+        console.log("🔄 Connection closed with remote user, attempting to reconnect...");
+        
+        setTimeout(async () => {
+          await ensureValidConnection();
+          
+          // Try to re-establish call
+          if (state.remoteEmail && remoteSocketIdRef.current) {
+            handleNewUserJoined({ 
+              emailId: state.remoteEmail, 
+              name: state.remoteName,
+              socketId: remoteSocketIdRef.current 
+            });
+          }
+        }, 2000);
+      }
+    };
+
+    // Check connection periodically
+    const interval = setInterval(monitorConnection, 5000);
+    
+    // Also check on state changes
+    peer.addEventListener('connectionstatechange', monitorConnection);
+    peer.addEventListener('signalingstatechange', monitorConnection);
+    
+    return () => {
+      clearInterval(interval);
+      if (peer) {
+        peer.removeEventListener('connectionstatechange', monitorConnection);
+        peer.removeEventListener('signalingstatechange', monitorConnection);
+      }
+    };
+  }, [peer, state.remoteEmail, state.remoteName, handleNewUserJoined, ensureValidConnection]);
+
+  // Debug function
   const debugWebRTC = () => {
     console.log("=== WEBRTC DEBUG INFO ===");
     console.log("Remote Socket ID:", remoteSocketIdRef.current);
@@ -1178,29 +1300,34 @@ const RoomPage = () => {
     console.log("Echo Cancellation:", state.echoCancellationEnabled);
     console.log("Noise Suppression:", state.noiseSuppressionEnabled);
     console.log("Stream Ready:", state.streamReady);
+    console.log("Connection Retry Count:", connectionRetryCount.current);
     console.log("=========================");
   };
 
-  // Add this to RoomPage.js
-useEffect(() => {
-  if (!peer) return;
-
-  const handleConnectionFailed = () => {
-    if (peer.connectionState === "failed" || peer.iceConnectionState === "failed") {
-      console.log("❌ Connection failed, attempting to reconnect...");
+  // Handle manual reconnection
+  const handleReconnect = async () => {
+    console.log("🔄 Manual reconnection requested");
+    connectionRetryCount.current = 0;
+    
+    if (resetPeerConnection) {
       resetPeerConnection();
     }
+    
+    // Wait a bit for reconnection
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    
+    // Try to re-establish call if we have a remote user
+    if (state.remoteEmail && remoteSocketIdRef.current) {
+      handleNewUserJoined({ 
+        emailId: state.remoteEmail, 
+        name: state.remoteName,
+        socketId: remoteSocketIdRef.current 
+      });
+    }
+    
+    toast("🔄 Reconnecting...", { duration: 2000 });
   };
 
-  peer.addEventListener('connectionstatechange', handleConnectionFailed);
-  peer.addEventListener('iceconnectionstatechange', handleConnectionFailed);
-
-  return () => {
-    peer.removeEventListener('connectionstatechange', handleConnectionFailed);
-    peer.removeEventListener('iceconnectionstatechange', handleConnectionFailed);
-  };
-}, [peer]);
-  
   // UI/UX Design
   return (
     <div className="min-h-screen text-white flex bg-gradient-to-br from-gray-900 via-black to-blue-900">
@@ -1433,6 +1560,15 @@ useEffect(() => {
           title="Toggle Chat"
         >
           {state.chatClose ? <MessageSquareText /> : <MessageSquareOff />}
+        </div>
+
+        {/* Reconnect Button */}
+        <div
+          onClick={handleReconnect}
+          className="p-3 rounded-full bg-yellow-600 hover:bg-yellow-700 cursor-pointer"
+          title="Reconnect Call"
+        >
+          <RefreshCw className="w-5 h-5" />
         </div>
 
         <div
