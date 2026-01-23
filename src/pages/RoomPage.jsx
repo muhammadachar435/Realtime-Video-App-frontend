@@ -44,14 +44,17 @@ const RoomPage = () => {
   const { roomId } = useParams();
 
   // Enhanced initialState
-  const enhancedInitialState = useMemo(() => ({
-    ...initialState,
-    echoCancellationEnabled: true,
-    noiseSuppressionEnabled: true,
-    audioDevices: [],
-    selectedAudioDevice: null,
-    audioProcessingActive: false // CHANGED: Disable custom audio processing
-  }), []);
+  const enhancedInitialState = useMemo(
+    () => ({
+      ...initialState,
+      echoCancellationEnabled: true,
+      noiseSuppressionEnabled: true,
+      audioDevices: [],
+      selectedAudioDevice: null,
+      audioProcessingActive: false, // CHANGED: Disable custom audio processing
+    }),
+    [],
+  );
 
   // useReducer
   const [state, dispatch] = useReducer(roomReducer, enhancedInitialState);
@@ -100,7 +103,7 @@ const RoomPage = () => {
     async ({ from, offer, fromName }) => {
       dispatch({ type: "SET_REMOTE_EMAIL", payload: from });
       dispatch({ type: "SET_REMOTE_NAME", payload: fromName });
-      
+
       // Store remote socket ID
       remoteSocketIdRef.current = from;
       if (setRemoteSocketId) {
@@ -117,9 +120,9 @@ const RoomPage = () => {
       try {
         console.log("📝 Creating answer for:", from);
         const answer = await createAnswer(offer);
-        socket.emit("call-accepted", { 
-          to: from, 
-          ans: answer 
+        socket.emit("call-accepted", {
+          to: from,
+          ans: answer,
         });
         console.log("📨 Answer sent to:", from);
       } catch (err) {
@@ -135,7 +138,7 @@ const RoomPage = () => {
       // ALWAYS set remote name immediately
       dispatch({ type: "SET_REMOTE_EMAIL", payload: emailId });
       dispatch({ type: "SET_REMOTE_NAME", payload: name });
-      
+
       // Store remote socket ID for ICE candidates
       remoteSocketIdRef.current = socketId;
       if (setRemoteSocketId) {
@@ -153,10 +156,10 @@ const RoomPage = () => {
       try {
         console.log("📞 Creating offer for:", emailId);
         const offer = await createOffer();
-        socket.emit("call-user", { 
-          emailId, 
+        socket.emit("call-user", {
+          emailId,
           offer,
-          socketId: socketId
+          socketId: socketId,
         });
         console.log("📨 Offer sent to:", emailId);
       } catch (err) {
@@ -184,49 +187,51 @@ const RoomPage = () => {
   const getUserMediaStream = useCallback(async () => {
     try {
       console.log("🎥 Requesting camera and microphone access...");
-      
+
       // SIMPLIFIED audio constraints - browser handles echo cancellation better
       const constraints = {
-        video: { 
-          width: { ideal: 1280 }, 
-          height: { ideal: 720 }, 
+        video: {
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
           frameRate: { ideal: 30 },
-          facingMode: "user"
+          facingMode: "user",
         },
-        audio: { 
+        audio: {
           // Let browser handle echo cancellation natively
           echoCancellation: true,
           noiseSuppression: true,
-          autoGainControl: true
+          autoGainControl: true,
           // REMOVED: Google-specific flags and channelCount
-        }
+        },
       };
 
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
 
       // Verify audio quality
       const audioTracks = stream.getAudioTracks();
-      audioTracks.forEach(track => {
+      audioTracks.forEach((track) => {
         const settings = track.getSettings();
         console.log("🔊 Audio settings after getUserMedia:", settings);
-        
+
         // Apply minimal constraints - browser knows best
-        track.applyConstraints({
-          echoCancellation: true,
-          noiseSuppression: true
-        }).catch(err => {
-          console.warn("Could not apply audio constraints:", err);
-        });
+        track
+          .applyConstraints({
+            echoCancellation: true,
+            noiseSuppression: true,
+          })
+          .catch((err) => {
+            console.warn("Could not apply audio constraints:", err);
+          });
       });
 
       console.log("✅ Media devices accessed successfully");
       dispatch({ type: "SET_MY_STREAM", payload: stream });
-      
+
       if (myVideoRef.current) {
         myVideoRef.current.srcObject = stream;
         console.log("✅ Local video stream attached");
       }
-      
+
       // Send the original stream (browser handles echo cancellation)
       await sendStream(stream);
       dispatch({ type: "SET_STREAM_READY", payload: true });
@@ -240,16 +245,16 @@ const RoomPage = () => {
       }
     } catch (err) {
       console.error("❌ Error accessing media devices:", err);
-      
+
       // Fallback to simpler constraints
-      if (err.name === 'OverconstrainedError' || err.name === 'ConstraintNotSatisfiedError') {
+      if (err.name === "OverconstrainedError" || err.name === "ConstraintNotSatisfiedError") {
         try {
           console.log("🔄 Trying fallback constraints...");
           const fallbackStream = await navigator.mediaDevices.getUserMedia({
             video: true,
-            audio: true // Let browser choose defaults
+            audio: true, // Let browser choose defaults
           });
-          
+
           dispatch({ type: "SET_MY_STREAM", payload: fallbackStream });
           await sendStream(fallbackStream);
           dispatch({ type: "SET_STREAM_READY", payload: true });
@@ -272,7 +277,7 @@ const RoomPage = () => {
       if (audioProcessorRef.current) {
         audioProcessorRef.current.disconnect();
       }
-      if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
+      if (audioContextRef.current && audioContextRef.current.state !== "closed") {
         audioContextRef.current.close();
       }
     };
@@ -296,16 +301,16 @@ const RoomPage = () => {
       });
     };
 
-    peer.addEventListener('connectionstatechange', logConnectionState);
-    peer.addEventListener('iceconnectionstatechange', logConnectionState);
-    peer.addEventListener('icegatheringstatechange', logConnectionState);
-    peer.addEventListener('signalingstatechange', logConnectionState);
+    peer.addEventListener("connectionstatechange", logConnectionState);
+    peer.addEventListener("iceconnectionstatechange", logConnectionState);
+    peer.addEventListener("icegatheringstatechange", logConnectionState);
+    peer.addEventListener("signalingstatechange", logConnectionState);
 
     return () => {
-      peer.removeEventListener('connectionstatechange', logConnectionState);
-      peer.removeEventListener('iceconnectionstatechange', logConnectionState);
-      peer.removeEventListener('icegatheringstatechange', logConnectionState);
-      peer.removeEventListener('signalingstatechange', logConnectionState);
+      peer.removeEventListener("connectionstatechange", logConnectionState);
+      peer.removeEventListener("iceconnectionstatechange", logConnectionState);
+      peer.removeEventListener("icegatheringstatechange", logConnectionState);
+      peer.removeEventListener("signalingstatechange", logConnectionState);
     };
   }, [peer]);
 
@@ -317,7 +322,7 @@ const RoomPage = () => {
     const handleIncomingIceCandidate = ({ candidate, from }) => {
       console.log("📥 Received ICE candidate from:", from, candidate);
       if (candidate && peer.remoteDescription) {
-        peer.addIceCandidate(new RTCIceCandidate(candidate)).catch(err => {
+        peer.addIceCandidate(new RTCIceCandidate(candidate)).catch((err) => {
           console.error("❌ Error adding ICE candidate:", err);
         });
       }
@@ -398,10 +403,10 @@ const RoomPage = () => {
     if (!remoteStreamRef.current && state.remoteEmail && state.streamReady) {
       console.log("🔄 Retrying connection to remote user...");
       const retry = setTimeout(() => {
-        handleNewUserJoined({ 
-          emailId: state.remoteEmail, 
+        handleNewUserJoined({
+          emailId: state.remoteEmail,
           name: state.remoteName,
-          socketId: remoteSocketIdRef.current 
+          socketId: remoteSocketIdRef.current,
         });
       }, 1000);
       return () => clearTimeout(retry);
@@ -433,15 +438,15 @@ const RoomPage = () => {
   //  -------------------Copy Meeting Link---------------------------------
   const copyMeetingLink = async () => {
     const link = `${window.location.origin}/room/${roomId}`;
-    
+
     // Updated message for production
     const message = `📹 Join my video meeting on MeetNow\n\n🔑 Room ID: ${roomId}\n🔗 Link: ${link}\n🌐 Live on: ${window.location.origin}`;
 
     try {
       await navigator.clipboard.writeText(message);
-      toast.success("Meeting link copied!", { 
+      toast.success("Meeting link copied!", {
         icon: "🔗",
-        autoClose: 500 
+        autoClose: 500,
       });
     } catch {
       const textArea = document.createElement("textarea");
@@ -450,9 +455,9 @@ const RoomPage = () => {
       textArea.select();
       document.execCommand("copy");
       document.body.removeChild(textArea);
-      toast.success("Meeting link copied!", { 
+      toast.success("Meeting link copied!", {
         icon: "🔗",
-        autoClose: 500 
+        autoClose: 500,
       });
     }
   };
@@ -475,9 +480,9 @@ const RoomPage = () => {
         },
       });
     } else {
-      toast.success("Left the room", { 
+      toast.success("Left the room", {
         icon: "👋",
-        autoClose: 500 
+        autoClose: 500,
       });
     }
 
@@ -491,7 +496,7 @@ const RoomPage = () => {
     if (audioProcessorRef.current) {
       audioProcessorRef.current.disconnect();
     }
-    if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
+    if (audioContextRef.current && audioContextRef.current.state !== "closed") {
       audioContextRef.current.close();
     }
 
@@ -541,12 +546,12 @@ const RoomPage = () => {
     });
 
     socket.on("user-joined", handleNewUserJoined);
-    
+
     socket.on("incoming-call", handleIncomingCall);
-    
+
     socket.on("call-accepted", handleCallAccepted);
 
-        socket.on("chat-message", (data) => {
+    socket.on("chat-message", (data) => {
       // Add to chat
       dispatch({ type: "ADD_MESSAGE", payload: data });
 
@@ -566,7 +571,7 @@ const RoomPage = () => {
         );
       }
     });
-    
+
     // user-left
     socket.on("user-left", ({ socketId }) => {
       pendingIncomingCall.current = null;
@@ -672,14 +677,14 @@ const RoomPage = () => {
   // --------------- toggleMic ----------------------
   const toggleMic = () => {
     if (!state.myStream) return;
-    
+
     const newMicState = !state.micOn;
     state.myStream.getAudioTracks().forEach((t) => {
       t.enabled = newMicState;
     });
-    
+
     dispatch({ type: "TOGGLE_MIC" });
-    
+
     toast(newMicState ? "Mic ON" : "Mic OFF", {
       icon: newMicState ? "🎤" : "🔇",
     });
@@ -693,12 +698,12 @@ const RoomPage = () => {
       // Switch to speaker mode
       try {
         await remoteVideoRef.current.setSinkId(state.handfreeDeviceId);
-        
+
         // DO NOT mute microphone - browser handles echo cancellation
         dispatch({ type: "TOGGLE_HANDFREE" });
-        toast("Speaker Mode ON", { 
+        toast("Speaker Mode ON", {
           icon: "🔊",
-          duration: 3000 
+          duration: 3000,
         });
       } catch (err) {
         console.error("Failed to switch to speaker:", err);
@@ -716,54 +721,6 @@ const RoomPage = () => {
     }
   };
 
-  // ------------------ Enhanced Audio Controls ------------------
-
-  // Add hardware echo cancellation toggle
-  const toggleEchoCancellation = async () => {
-    if (!state.myStream) return;
-    
-    const newEchoState = !state.echoCancellationEnabled;
-    const audioTracks = state.myStream.getAudioTracks();
-    
-    for (const track of audioTracks) {
-      try {
-        await track.applyConstraints({
-          echoCancellation: newEchoState
-        });
-      } catch (err) {
-        console.warn("Could not toggle echo cancellation:", err);
-      }
-    }
-    
-    dispatch({ type: "TOGGLE_ECHO_CANCELLATION" });
-    toast(newEchoState ? "Echo Cancellation ON" : "Echo Cancellation OFF", {
-      icon: newEchoState ? "✅" : "❌"
-    });
-  };
-
-  // Toggle noise suppression
-  const toggleNoiseSuppression = async () => {
-    if (!state.myStream) return;
-    
-    const newNoiseState = !state.noiseSuppressionEnabled;
-    const audioTracks = state.myStream.getAudioTracks();
-    
-    for (const track of audioTracks) {
-      try {
-        await track.applyConstraints({
-          noiseSuppression: newNoiseState
-        });
-      } catch (err) {
-        console.warn("Could not toggle noise suppression:", err);
-      }
-    }
-    
-    dispatch({ type: "TOGGLE_NOISE_SUPPRESSION" });
-    toast(newNoiseState ? "Noise Suppression ON" : "Noise Suppression OFF", {
-      icon: newNoiseState ? "🔇" : "🔊"
-    });
-  };
-
   // ------------------ Detect Audio Devices ------------------
   useEffect(() => {
     const detectAudioDevices = async () => {
@@ -771,13 +728,16 @@ const RoomPage = () => {
         const devices = await navigator.mediaDevices.enumerateDevices();
         const audioInputDevices = devices.filter((d) => d.kind === "audioinput");
         const audioOutputDevices = devices.filter((d) => d.kind === "audiooutput");
-        
+
         dispatch({ type: "SET_AUDIO_DEVICES", payload: audioInputDevices });
-        
+
         // Store first speaker for handfree mode
         if (audioOutputDevices.length > 0) {
           dispatch({ type: "SET_HANDFREE_DEVICE", payload: audioOutputDevices[0].deviceId });
-          console.log("🔊 Available speakers:", audioOutputDevices.map(s => s.label));
+          console.log(
+            "🔊 Available speakers:",
+            audioOutputDevices.map((s) => s.label),
+          );
         }
       } catch (err) {
         console.error("Failed to enumerate devices:", err);
@@ -793,24 +753,24 @@ const RoomPage = () => {
       // Get current video constraints
       const videoTrack = state.myStream?.getVideoTracks()[0];
       const videoConstraints = videoTrack ? videoTrack.getSettings() : true;
-      
+
       const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { 
+        audio: {
           deviceId: { exact: deviceId },
           echoCancellation: true,
-          noiseSuppression: true
+          noiseSuppression: true,
         },
-        video: videoConstraints
+        video: videoConstraints,
       });
-      
+
       dispatch({ type: "SET_MY_STREAM", payload: stream });
       dispatch({ type: "SELECT_AUDIO_DEVICE", payload: deviceId });
-      
+
       // Update peer connection with new stream
       if (sendStream) {
         await sendStream(stream);
       }
-      
+
       toast.success("Audio device changed");
     } catch (err) {
       console.error("Failed to switch audio device:", err);
@@ -836,7 +796,7 @@ const RoomPage = () => {
     if (!state.isCallActive) {
       dispatch({ type: "START_CALL" });
     }
-    
+
     console.log("✅ Remote video ready, call started");
   };
 
@@ -862,7 +822,7 @@ const RoomPage = () => {
   };
 
   // ------------------ Chat Message Listener ------------------
- 
+
   // This code waits until the microphone and camera are ready, then it automatically accepts the incoming call
   useEffect(() => {
     if (pendingIncomingCall.current && state.streamReady) {
@@ -1100,23 +1060,6 @@ const RoomPage = () => {
           {state.usingHandfree ? <Headphones /> : <Volume2 />}
         </div>
 
-        {/* Enhanced Audio Controls */}
-        <div
-          onClick={toggleEchoCancellation}
-          className={`p-3 rounded-full ${state.echoCancellationEnabled ? 'bg-green-700' : 'bg-[#364355]'} hover:bg-[#2e4361] cursor-pointer`}
-          title="Toggle Echo Cancellation"
-        >
-          <Ear className="w-5 h-5" />
-        </div>
-
-        <div
-          onClick={toggleNoiseSuppression}
-          className={`p-3 rounded-full ${state.noiseSuppressionEnabled ? 'bg-green-700' : 'bg-[#364355]'} hover:bg-[#2e4361] cursor-pointer`}
-          title="Toggle Noise Suppression"
-        >
-          <Mic className="w-5 h-5" />
-        </div>
-
         <div
           onClick={handleChat}
           className={`relative p-3 rounded-full bg-[#364355] hover:bg-[#2e4361] cursor-pointer ${state.chatClose ? "bg-gray-900" : ""} `}
@@ -1132,7 +1075,7 @@ const RoomPage = () => {
         >
           <Share2 className="w-5 h-5" />
         </div>
-        
+
         <div
           onClick={leaveRoom}
           className={`p-3 rounded-full bg-[#ea002e] hover:bg-[#c7082e] cursor-pointer`}
@@ -1146,3 +1089,4 @@ const RoomPage = () => {
 };
 
 export default RoomPage;
+
