@@ -238,7 +238,7 @@ const RoomPage = () => {
         console.log("✅ Local video stream attached");
       }
       
-      // await sendStream(stream);
+      await sendStream(stream);
       dispatch({ type: "SET_STREAM_READY", payload: true });
       // dispatch({ type: "SET_AUDIO_PROCESSING_ACTIVE", payload: true });
       console.log("✅ Stream ready for WebRTC");
@@ -308,12 +308,50 @@ const RoomPage = () => {
         analyser.fftSize = 256;
         analyserRef.current = analyser;
         source.connect(analyser);
+
         
+        Create noise suppressor node
+        const noiseSuppressor = audioContext.createScriptProcessor(4096, 1, 1);
+
+        noiseSuppressor.onaudioprocess = function (event) {
+          const input = event.inputBuffer.getChannelData(0);
+          const output = event.outputBuffer.getChannelData(0);
+
+          // Advanced noise gate implementation
+          let sum = 0;
+          for (let i = 0; i < input.length; i++) {
+            sum += input[i] * input[i];
+          }
+
+          const rms = Math.sqrt(sum / input.length);
+          const threshold = 0.015; // Optimized threshold
+
+          if (rms < threshold) {
+            // Silence the output (noise gate)
+            for (let i = 0; i < output.length; i++) {
+              output[i] = 0;
+            }
+          } else {
+            // Apply dynamic compression and slight high-pass filter
+            const compressionFactor = 0.85; // Reduce volume to prevent clipping
+            const highPassFactor = 0.1; // Reduce low frequencies (rumble)
+
+            for (let i = 0; i < output.length; i++) {
+              // Simple high-pass filter
+              const filtered = i > 0 ? input[i] - input[i - 1] * highPassFactor : input[i];
+              // Compression
+              output[i] = filtered * compressionFactor;
+            }
+          }
+        };
        
         
        
         const destination = audioContext.createMediaStreamDestination();
-        
+        source.connect(noiseSuppressor);
+        noiseSuppressor.connect(destination);
+
+        audioProcessorRef.current = noiseSuppressor;
        
         localAudioStreamRef.current = destination.stream;
         
@@ -326,7 +364,7 @@ const RoomPage = () => {
               ...destination.stream.getAudioTracks()
             ]);
             
-            await sendStream(processedStream);
+           
             console.log("✅ Audio processing applied and stream updated");
           } catch (err) {
             console.warn("Could not update stream with processed audio:", err);
