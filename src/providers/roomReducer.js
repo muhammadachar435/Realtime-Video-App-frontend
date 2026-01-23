@@ -27,6 +27,7 @@ export const initialState = {
   audioDevices: [],
   selectedAudioDevice: null,
   audioProcessingActive: true,
+   mirrorSelfView: true,
 };
 
 export function roomReducer(state, action) {
@@ -101,6 +102,8 @@ export function roomReducer(state, action) {
       return { ...state, selectedAudioDevice: action.payload };
     case "SET_AUDIO_PROCESSING_ACTIVE":
       return { ...state, audioProcessingActive: action.payload };
+      case "TOGGLE_MIRROR":
+  return { ...state, mirrorSelfView: !state.mirrorSelfView };
     default:
       return state;
   }
