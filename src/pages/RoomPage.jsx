@@ -238,9 +238,9 @@ const RoomPage = () => {
         console.log("✅ Local video stream attached");
       }
       
-      await sendStream(stream);
+      // await sendStream(stream);
       dispatch({ type: "SET_STREAM_READY", payload: true });
-      dispatch({ type: "SET_AUDIO_PROCESSING_ACTIVE", payload: true });
+      // dispatch({ type: "SET_AUDIO_PROCESSING_ACTIVE", payload: true });
       console.log("✅ Stream ready for WebRTC");
 
       // Handle pending incoming call automatically
