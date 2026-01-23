@@ -66,6 +66,18 @@ const RoomPage = () => {
   const audioProcessorRef = useRef(null);
   const localAudioStreamRef = useRef(null);
   const analyserRef = useRef(null);
+  const socketRef = useRef(socket);
+  const peerRef = useRef(peer);
+  const hasInitializedMedia = useRef(false);
+
+  // Update refs when values change
+  useEffect(() => {
+    socketRef.current = socket;
+  }, [socket]);
+
+  useEffect(() => {
+    peerRef.current = peer;
+  }, [peer]);
 
   // totalUsers
   const totalUsers = useMemo(() => (state.remoteName ? 2 : 1), [state.remoteName]);
@@ -117,7 +129,7 @@ const RoomPage = () => {
       try {
         console.log("📝 Creating answer for:", from);
         const answer = await createAnswer(offer);
-        socket.emit("call-accepted", { 
+        socketRef.current?.emit("call-accepted", { 
           to: from, 
           ans: answer 
         });
@@ -126,7 +138,7 @@ const RoomPage = () => {
         console.error("❌ Error creating answer:", err);
       }
     },
-    [createAnswer, socket, state.streamReady, setRemoteSocketId],
+    [createAnswer, setRemoteSocketId, state.streamReady],
   );
 
   // ------------------ New User Joined ------------------
@@ -153,7 +165,7 @@ const RoomPage = () => {
       try {
         console.log("📞 Creating offer for:", emailId);
         const offer = await createOffer();
-        socket.emit("call-user", { 
+        socketRef.current?.emit("call-user", { 
           emailId, 
           offer,
           socketId: socketId
@@ -163,7 +175,7 @@ const RoomPage = () => {
         console.error("❌ Error creating offer:", err);
       }
     },
-    [createOffer, socket, state.streamReady, setRemoteSocketId],
+    [createOffer, setRemoteSocketId, state.streamReady],
   );
 
   // ------------------ Call Accepted ------------------
@@ -182,6 +194,14 @@ const RoomPage = () => {
 
   // ------------------ Local Media ------------------
   const getUserMediaStream = useCallback(async () => {
+    // Prevent multiple calls
+    if (hasInitializedMedia.current) {
+      console.log("⚠️ Media already initialized, skipping...");
+      return;
+    }
+    
+    hasInitializedMedia.current = true;
+
     try {
       console.log("🎥 Requesting camera and microphone access...");
       
@@ -251,6 +271,7 @@ const RoomPage = () => {
       }
     } catch (err) {
       console.error("❌ Error accessing media devices:", err);
+      hasInitializedMedia.current = false;
       
       // Fallback to simpler constraints
       if (err.name === 'OverconstrainedError' || err.name === 'ConstraintNotSatisfiedError') {
@@ -279,6 +300,20 @@ const RoomPage = () => {
     }
   }, [sendStream, handleIncomingCall]);
 
+  // Initial call to getUserMediaStream - ONLY ONCE
+  useEffect(() => {
+    if (!state.myStream && !state.streamReady && !hasInitializedMedia.current) {
+      getUserMediaStream();
+    }
+    
+    return () => {
+      // Clean up media on unmount
+      if (state.myStream) {
+        state.myStream.getTracks().forEach(track => track.stop());
+      }
+    };
+  }, [getUserMediaStream, state.myStream, state.streamReady]);
+
   // ------------------ Audio Processing ------------------
   useEffect(() => {
     if (!state.myStream || !state.audioProcessingActive) return;
@@ -288,7 +323,7 @@ const RoomPage = () => {
       try {
         // Cleanup previous audio context if exists
         if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
-          audioContextRef.current.close();
+          await audioContextRef.current.close();
         }
 
         const audioContext = new (window.AudioContext || window.webkitAudioContext)({
@@ -353,7 +388,7 @@ const RoomPage = () => {
         localAudioStreamRef.current = destination.stream;
         
         // Update peer with processed audio if stream is ready
-        if (peer && sendStream && state.streamReady) {
+        if (peerRef.current && sendStream && state.streamReady) {
           try {
             // Combine processed audio with video
             const processedStream = new MediaStream([
@@ -381,15 +416,10 @@ const RoomPage = () => {
         audioProcessorRef.current.disconnect();
       }
       if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
-        audioContextRef.current.close();
+        audioContextRef.current.close().catch(() => {});
       }
     };
-  }, [state.myStream, state.audioProcessingActive, peer, sendStream, state.streamReady]);
-
-  // Initial call to getUserMediaStream
-  useEffect(() => {
-    getUserMediaStream();
-  }, [getUserMediaStream]);
+  }, [state.myStream, state.audioProcessingActive, sendStream, state.streamReady]);
 
   // ------------------ Debug WebRTC Connection ------------------
   useEffect(() => {
@@ -443,6 +473,7 @@ const RoomPage = () => {
     };
 
     // Set up event listeners
+    socket.off("ice-candidate");
     socket.on("ice-candidate", handleIncomingIceCandidate);
     peer.onicecandidate = handleLocalIceCandidate;
 
@@ -600,7 +631,7 @@ const RoomPage = () => {
       audioProcessorRef.current.disconnect();
     }
     if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
-      audioContextRef.current.close();
+      audioContextRef.current.close().catch(() => {});
     }
 
     // Reset remote video
@@ -631,6 +662,9 @@ const RoomPage = () => {
       console.log("📤 Leave room notification sent");
     }
 
+    // Reset initialization flag
+    hasInitializedMedia.current = false;
+
     // Redirect after a short delay to allow toast to show
     setTimeout(() => {
       window.location.href = "/";
@@ -643,18 +677,12 @@ const RoomPage = () => {
 
     console.log("🔌 Socket connected, setting up listeners...");
 
-    socket.on("joined-room", () => {
+    const handleJoinedRoom = () => {
       dispatch({ type: "SET_HAS_JOINED_ROOM", payload: true });
       console.log("✅ Joined room successfully");
-    });
+    };
 
-    socket.on("user-joined", handleNewUserJoined);
-    
-    socket.on("incoming-call", handleIncomingCall);
-    
-    socket.on("call-accepted", handleCallAccepted);
-    
-    socket.on("chat-message", (data) => {
+    const handleChatMessage = (data) => {
       // Add to chat
       dispatch({ type: "ADD_MESSAGE", payload: data });
 
@@ -673,10 +701,9 @@ const RoomPage = () => {
           { duration: 3000 },
         );
       }
-    });
+    };
 
-    // user-left
-    socket.on("user-left", ({ socketId }) => {
+    const handleUserLeft = ({ socketId }) => {
       pendingIncomingCall.current = null;
       remoteSocketIdRef.current = null;
       console.log("🚪 User left:", socketId);
@@ -717,8 +744,25 @@ const RoomPage = () => {
 
       // End the call
       dispatch({ type: "END_CALL" });
-    });
+    };
 
+    // Remove all listeners first to avoid duplicates
+    socket.off("joined-room");
+    socket.off("user-joined");
+    socket.off("incoming-call");
+    socket.off("call-accepted");
+    socket.off("chat-message");
+    socket.off("user-left");
+    socket.off("connect_error");
+
+    // Add listeners
+    socket.on("joined-room", handleJoinedRoom);
+    socket.on("user-joined", handleNewUserJoined);
+    socket.on("incoming-call", handleIncomingCall);
+    socket.on("call-accepted", handleCallAccepted);
+    socket.on("chat-message", handleChatMessage);
+    socket.on("user-left", handleUserLeft);
+    
     // Socket error handling
     socket.on("connect_error", (error) => {
       console.error("❌ Socket connection error:", error);
@@ -731,8 +775,8 @@ const RoomPage = () => {
       socket.off("user-joined", handleNewUserJoined);
       socket.off("incoming-call", handleIncomingCall);
       socket.off("call-accepted", handleCallAccepted);
-      socket.off("chat-message");
-      socket.off("user-left");
+      socket.off("chat-message", handleChatMessage);
+      socket.off("user-left", handleUserLeft);
       socket.off("connect_error");
     };
   }, [socket, handleNewUserJoined, handleIncomingCall, handleCallAccepted, state.isCallActive]);
@@ -772,6 +816,7 @@ const RoomPage = () => {
       dispatch({ type: "SET_REMOTE_CAMERA", payload: cameraOn });
     };
 
+    socket.off("camera-toggle");
     socket.on("camera-toggle", handleCameraToggle);
 
     return () => socket.off("camera-toggle", handleCameraToggle);
@@ -959,8 +1004,18 @@ const RoomPage = () => {
         video: videoConstraints
       });
       
+      // Stop old stream
+      if (state.myStream) {
+        state.myStream.getTracks().forEach(track => track.stop());
+      }
+      
       dispatch({ type: "SET_MY_STREAM", payload: stream });
       dispatch({ type: "SELECT_AUDIO_DEVICE", payload: deviceId });
+      
+      // Update video element
+      if (myVideoRef.current) {
+        myVideoRef.current.srcObject = stream;
+      }
       
       // Update peer connection with new stream
       if (sendStream) {
@@ -1046,6 +1101,7 @@ const RoomPage = () => {
       }
     };
 
+    socket.off("chat-message");
     socket.on("chat-message", handleChatMessage);
     return () => socket.off("chat-message", handleChatMessage);
   }, [socket, state.remoteName]);
@@ -1069,6 +1125,44 @@ const RoomPage = () => {
     }
   }, []);
 
+  // Add component unmount cleanup
+  useEffect(() => {
+    return () => {
+      console.log("🧹 Component unmounting - cleanup");
+      
+      // Stop local stream
+      if (state.myStream) {
+        state.myStream.getTracks().forEach(track => track.stop());
+      }
+      
+      // Stop remote stream
+      if (remoteVideoRef.current && remoteVideoRef.current.srcObject) {
+        remoteVideoRef.current.srcObject.getTracks().forEach(track => track.stop());
+      }
+      
+      // Close peer connection
+      if (peer) {
+        peer.close();
+      }
+      
+      // Close audio context
+      if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
+        audioContextRef.current.close().catch(() => {});
+      }
+      
+      // Notify server
+      if (socket && roomId) {
+        socket.emit("leave-room", { roomId });
+      }
+      
+      // Clear all refs
+      pendingIncomingCall.current = null;
+      remoteSocketIdRef.current = null;
+      remoteStreamRef.current = null;
+      hasInitializedMedia.current = false;
+    };
+  }, [socket, roomId, peer, state.myStream]);
+
   // Debug function (optional, can be removed)
   const debugWebRTC = () => {
     console.log("=== WEBRTC DEBUG INFO ===");
@@ -1083,10 +1177,11 @@ const RoomPage = () => {
     console.log("Audio Processing Active:", state.audioProcessingActive);
     console.log("Echo Cancellation:", state.echoCancellationEnabled);
     console.log("Noise Suppression:", state.noiseSuppressionEnabled);
+    console.log("Stream Ready:", state.streamReady);
     console.log("=========================");
   };
 
-  // UI/UX Design - SAME AS BEFORE (unchanged)
+  // UI/UX Design
   return (
     <div className="min-h-screen text-white flex bg-gradient-to-br from-gray-900 via-black to-blue-900">
       {/* Header Inside Status & Clock */}
