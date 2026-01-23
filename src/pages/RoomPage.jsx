@@ -1,5 +1,5 @@
 // Import hooks
-import { useEffect, useCallback, useRef, useReducer, useMemo } from "react";
+import { useEffect, useCallback, useRef, useReducer, useMemo, useState } from "react";
 
 // Import router
 import { useParams } from "react-router-dom";
@@ -55,6 +55,9 @@ const RoomPage = () => {
 
   // useReducer
   const [state, dispatch] = useReducer(roomReducer, enhancedInitialState);
+  
+  // Add state for camera facing mode
+  const [cameraFacingMode, setCameraFacingMode] = useState('user');
 
   // useRef
   const pendingIncomingCall = useRef(null);
@@ -191,18 +194,27 @@ const RoomPage = () => {
           width: { ideal: 1280 }, 
           height: { ideal: 720 }, 
           frameRate: { ideal: 30 },
-          facingMode: "user"
+          facingMode: "user" // Front camera
         },
         audio: { 
           // Let browser handle echo cancellation natively
           echoCancellation: true,
           noiseSuppression: true,
           autoGainControl: true
-          // REMOVED: Google-specific flags and channelCount
         }
       };
 
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
+
+      // Detect camera facing mode
+      const videoTrack = stream.getVideoTracks()[0];
+      if (videoTrack) {
+        const settings = videoTrack.getSettings();
+        if (settings.facingMode) {
+          setCameraFacingMode(settings.facingMode);
+          console.log("📸 Camera facing mode:", settings.facingMode);
+        }
+      }
 
       // Verify audio quality
       const audioTracks = stream.getAudioTracks();
@@ -249,6 +261,15 @@ const RoomPage = () => {
             video: true,
             audio: true // Let browser choose defaults
           });
+          
+          // Detect camera facing mode for fallback
+          const videoTrack = fallbackStream.getVideoTracks()[0];
+          if (videoTrack) {
+            const settings = videoTrack.getSettings();
+            if (settings.facingMode) {
+              setCameraFacingMode(settings.facingMode);
+            }
+          }
           
           dispatch({ type: "SET_MY_STREAM", payload: fallbackStream });
           await sendStream(fallbackStream);
@@ -546,7 +567,7 @@ const RoomPage = () => {
     
     socket.on("call-accepted", handleCallAccepted);
 
-        socket.on("chat-message", (data) => {
+    socket.on("chat-message", (data) => {
       // Add to chat
       dispatch({ type: "ADD_MESSAGE", payload: data });
 
@@ -899,7 +920,7 @@ const RoomPage = () => {
     console.log("=========================");
   };
 
-  // UI/UX Design - SAME AS BEFORE (unchanged)
+  // UI/UX Design - CORRECTED FOR CAMERA MIRRORING
   return (
     <div className="min-h-screen text-white flex bg-gradient-to-br from-gray-900 via-black to-blue-900">
       {/* Header Inside Status & Clock */}
@@ -989,7 +1010,7 @@ const RoomPage = () => {
           )}
         </div>
 
-        {/* MY VIDEO */}
+        {/* MY VIDEO - FIXED MIRRORING ISSUE */}
         <div
           onClick={handleSwipped}
           className={`absolute transition-all duration-300 rounded-md bg-[#0d1321]
@@ -1001,7 +1022,10 @@ const RoomPage = () => {
             autoPlay
             playsInline
             muted
-            className={`w-full h-full rounded-md object-cover shadow-2xl bg-[#0d1321] ${state.cameraOn ? "block" : "hidden"} `}
+            // FIX: Apply horizontal flip only to front camera
+            className={`w-full h-full rounded-md object-cover shadow-2xl bg-[#0d1321] ${
+              state.cameraOn ? "block" : "hidden"
+            } ${cameraFacingMode === 'user' ? 'transform -scale-x-100' : ''}`}
           />
 
           {/* Local Video User A Name */}
