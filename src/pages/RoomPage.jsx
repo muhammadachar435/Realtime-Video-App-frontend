@@ -50,7 +50,7 @@ const RoomPage = () => {
     noiseSuppressionEnabled: true,
     audioDevices: [],
     selectedAudioDevice: null,
-    audioProcessingActive: true
+    audioProcessingActive: false // CHANGED: Disable custom audio processing
   }), []);
 
   // useReducer
@@ -185,7 +185,7 @@ const RoomPage = () => {
     try {
       console.log("🎥 Requesting camera and microphone access...");
       
-      // Enhanced audio constraints for echo cancellation
+      // SIMPLIFIED audio constraints - browser handles echo cancellation better
       const constraints = {
         video: { 
           width: { ideal: 1280 }, 
@@ -194,20 +194,11 @@ const RoomPage = () => {
           facingMode: "user"
         },
         audio: { 
-          // Advanced echo cancellation settings
-          echoCancellation: { ideal: true },
-          noiseSuppression: { ideal: true },
-          autoGainControl: { ideal: true },
-          // Specific codec preferences
-          channelCount: 1, // Mono - reduces echo
-          sampleRate: 16000, // Optimized for voice
-          // Device selection
-          deviceId: undefined, // Let browser choose best
-          // Advanced features
-          googEchoCancellation: true,
-          googNoiseSuppression: true,
-          googAutoGainControl: true,
-          googHighpassFilter: true
+          // Let browser handle echo cancellation natively
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+          // REMOVED: Google-specific flags and channelCount
         }
       };
 
@@ -219,12 +210,10 @@ const RoomPage = () => {
         const settings = track.getSettings();
         console.log("🔊 Audio settings after getUserMedia:", settings);
         
-        // Apply additional constraints if needed
+        // Apply minimal constraints - browser knows best
         track.applyConstraints({
           echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-          channelCount: 1
+          noiseSuppression: true
         }).catch(err => {
           console.warn("Could not apply audio constraints:", err);
         });
@@ -238,9 +227,9 @@ const RoomPage = () => {
         console.log("✅ Local video stream attached");
       }
       
+      // Send the original stream (browser handles echo cancellation)
       await sendStream(stream);
       dispatch({ type: "SET_STREAM_READY", payload: true });
-      // dispatch({ type: "SET_AUDIO_PROCESSING_ACTIVE", payload: true });
       console.log("✅ Stream ready for WebRTC");
 
       // Handle pending incoming call automatically
@@ -258,17 +247,12 @@ const RoomPage = () => {
           console.log("🔄 Trying fallback constraints...");
           const fallbackStream = await navigator.mediaDevices.getUserMedia({
             video: true,
-            audio: {
-              echoCancellation: true,
-              noiseSuppression: true,
-              autoGainControl: true
-            }
+            audio: true // Let browser choose defaults
           });
           
           dispatch({ type: "SET_MY_STREAM", payload: fallbackStream });
           await sendStream(fallbackStream);
           dispatch({ type: "SET_STREAM_READY", payload: true });
-          dispatch({ type: "SET_AUDIO_PROCESSING_ACTIVE", payload: true });
         } catch (fallbackErr) {
           console.error("Fallback also failed:", fallbackErr);
           toast.error("Please allow camera and microphone access");
@@ -281,97 +265,8 @@ const RoomPage = () => {
 
   // ------------------ Audio Processing ------------------
   useEffect(() => {
-    if (!state.myStream || !state.audioProcessingActive) return;
-
-    // Setup audio context for local audio processing
-    const setupAudioProcessing = async () => {
-      try {
-        // Cleanup previous audio context if exists
-        if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
-          audioContextRef.current.close();
-        }
-
-        const audioContext = new (window.AudioContext || window.webkitAudioContext)({
-          sampleRate: 16000,
-          latencyHint: 'interactive'
-        });
-        audioContextRef.current = audioContext;
-
-        // Get audio track
-        const audioTrack = state.myStream.getAudioTracks()[0];
-        if (!audioTrack) return;
-
-        const source = audioContext.createMediaStreamSource(new MediaStream([audioTrack]));
-        
-        // Create analyser for debugging
-        const analyser = audioContext.createAnalyser();
-        analyser.fftSize = 256;
-        analyserRef.current = analyser;
-        source.connect(analyser);
-        const noiseSuppressor = audioContext.createScriptProcessor(4096, 1, 1);
-
-        noiseSuppressor.onaudioprocess = function (event) {
-          const input = event.inputBuffer.getChannelData(0);
-          const output = event.outputBuffer.getChannelData(0);
-
-          // Advanced noise gate implementation
-          let sum = 0;
-          for (let i = 0; i < input.length; i++) {
-            sum += input[i] * input[i];
-          }
-          const rms = Math.sqrt(sum / input.length);
-          const threshold = 0.015; // Optimized threshold
-
-          if (rms < threshold) {
-            // Silence the output (noise gate)
-            for (let i = 0; i < output.length; i++) {
-              output[i] = 0;
-            }
-          } else {
-            // Apply dynamic compression and slight high-pass filter
-            const compressionFactor = 0.85; // Reduce volume to prevent clipping
-            const highPassFactor = 0.1; // Reduce low frequencies (rumble)
-
-            for (let i = 0; i < output.length; i++) {
-              // Simple high-pass filter
-              const filtered = i > 0 ? input[i] - input[i - 1] * highPassFactor : input[i];
-              // Compression
-              output[i] = filtered * compressionFactor;
-            }
-          }
-        };
-       
-        const destination = audioContext.createMediaStreamDestination();
-        source.connect(noiseSuppressor);
-        noiseSuppressor.connect(destination);
-
-        audioProcessorRef.current = noiseSuppressor;
-       
-        localAudioStreamRef.current = destination.stream;
-        
-        // Update peer with processed audio if stream is ready
-        if (peer && sendStream && state.streamReady) {
-          try {
-            // Combine processed audio with video
-            const processedStream = new MediaStream([
-              ...state.myStream.getVideoTracks(),
-              ...destination.stream.getAudioTracks()
-            ]);
-            
-           
-            console.log("✅ Audio processing applied and stream updated");
-          } catch (err) {
-            console.warn("Could not update stream with processed audio:", err);
-          }
-        }
-        
-      } catch (error) {
-        console.warn("Audio processing setup failed:", error);
-      }
-    };
-
-    setupAudioProcessing();
-
+    // DISABLED - Browser handles audio processing better
+    // This prevents the echo feedback loop
     return () => {
       // Cleanup
       if (audioProcessorRef.current) {
@@ -381,7 +276,7 @@ const RoomPage = () => {
         audioContextRef.current.close();
       }
     };
-  }, [state.myStream, state.audioProcessingActive, peer, sendStream, state.streamReady]);
+  }, []);
 
   // Initial call to getUserMediaStream
   useEffect(() => {
@@ -781,14 +676,6 @@ const RoomPage = () => {
     const newMicState = !state.micOn;
     state.myStream.getAudioTracks().forEach((t) => {
       t.enabled = newMicState;
-      // Apply echo cancellation when enabling mic
-      if (newMicState) {
-        t.applyConstraints({
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true
-        }).catch(err => console.warn("Could not apply audio constraints:", err));
-      }
     });
     
     dispatch({ type: "TOGGLE_MIC" });
@@ -802,26 +689,14 @@ const RoomPage = () => {
   const toggleHandfree = async () => {
     if (!remoteVideoRef.current || !state.myStream) return;
 
-    const micTracks = state.myStream.getAudioTracks();
-    
     if (!state.usingHandfree && state.handfreeDeviceId) {
       // Switch to speaker mode
       try {
         await remoteVideoRef.current.setSinkId(state.handfreeDeviceId);
         
-        // Mute microphone to prevent echo
-        micTracks.forEach((t) => {
-          t.enabled = false;
-          // Apply additional echo cancellation in speaker mode
-          t.applyConstraints({
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true
-          });
-        });
-        
+        // DO NOT mute microphone - browser handles echo cancellation
         dispatch({ type: "TOGGLE_HANDFREE" });
-        toast("Speaker Mode ON - Microphone muted to prevent echo", { 
+        toast("Speaker Mode ON", { 
           icon: "🔊",
           duration: 3000 
         });
@@ -833,18 +708,6 @@ const RoomPage = () => {
       // Switch back to normal mode
       try {
         await remoteVideoRef.current.setSinkId("");
-        
-        // Unmute microphone
-        micTracks.forEach((t) => {
-          t.enabled = true;
-          // Apply optimal constraints for headphone mode
-          t.applyConstraints({
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true
-          });
-        });
-        
         dispatch({ type: "TOGGLE_HANDFREE" });
         toast("Headphone Mode ON", { icon: "🎧" });
       } catch (err) {
@@ -865,9 +728,7 @@ const RoomPage = () => {
     for (const track of audioTracks) {
       try {
         await track.applyConstraints({
-          echoCancellation: newEchoState,
-          noiseSuppression: true,
-          autoGainControl: true
+          echoCancellation: newEchoState
         });
       } catch (err) {
         console.warn("Could not toggle echo cancellation:", err);
@@ -890,9 +751,7 @@ const RoomPage = () => {
     for (const track of audioTracks) {
       try {
         await track.applyConstraints({
-          echoCancellation: true,
-          noiseSuppression: newNoiseState,
-          autoGainControl: true
+          noiseSuppression: newNoiseState
         });
       } catch (err) {
         console.warn("Could not toggle noise suppression:", err);
@@ -939,9 +798,7 @@ const RoomPage = () => {
         audio: { 
           deviceId: { exact: deviceId },
           echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-          channelCount: 1
+          noiseSuppression: true
         },
         video: videoConstraints
       });
@@ -1289,4 +1146,3 @@ const RoomPage = () => {
 };
 
 export default RoomPage;
-
