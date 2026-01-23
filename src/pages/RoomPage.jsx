@@ -308,9 +308,6 @@ const RoomPage = () => {
         analyser.fftSize = 256;
         analyserRef.current = analyser;
         source.connect(analyser);
-
-        
-        // Create noise suppressor node
         const noiseSuppressor = audioContext.createScriptProcessor(4096, 1, 1);
 
         noiseSuppressor.onaudioprocess = function (event) {
