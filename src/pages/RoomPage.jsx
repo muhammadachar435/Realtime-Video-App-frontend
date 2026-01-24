@@ -28,7 +28,6 @@ import {
   MessageSquareOff,
   X,
   Users,
-  Ear,
 } from "lucide-react";
 
 // import toast to display Notification
@@ -69,12 +68,13 @@ const RoomPage = () => {
   const audioProcessorRef = useRef(null);
   const localAudioStreamRef = useRef(null);
   const analyserRef = useRef(null);
+  const answerProcessedRef = useRef(false);
 
   // totalUsers
   const totalUsers = useMemo(() => (state.remoteName ? 2 : 1), [state.remoteName]);
 
   // ------------------ Helper Functions ------------------
-  const getCallDurationText = () => {
+  const getCallDurationText = useCallback(() => {
     if (!state.callStartTime) return "0 seconds";
 
     const now = Date.now();
@@ -96,10 +96,10 @@ const RoomPage = () => {
     }
 
     return durationText.trim();
-  };
+  }, [state.callStartTime]);
 
   // ================ ADD THIS FUNCTION ================
-  const cleanupEverything = () => {
+  const cleanupEverything = useCallback(() => {
     console.log("🧹 Cleaning up all resources...");
     
     // Stop local stream
@@ -140,8 +140,7 @@ const RoomPage = () => {
     dispatch({ type: "SET_REMOTE_EMAIL", payload: null });
     dispatch({ type: "SET_REMOTE_CAMERA", payload: false });
     dispatch({ type: "SET_REMOTEVIDEOREADY", payload: false });
-  };
-  // ==================================================
+  }, [state.myStream, peer]);
 
   // ------------------ Incoming Call ------------------
   const handleIncomingCall = useCallback(
@@ -214,18 +213,58 @@ const RoomPage = () => {
     [createOffer, socket, state.streamReady, setRemoteSocketId],
   );
 
-  // ------------------ Call Accepted ------------------
+  // ------------------ Call Accepted (UPDATED) ------------------
   const handleCallAccepted = useCallback(
     async ({ ans }) => {
       try {
         console.log("✅ Setting remote answer");
-        await setRemoteAns(ans);
-        console.log("✅ Remote answer set successfully");
+        console.log("📊 Peer connection state:", peer?.signalingState);
+        
+        // Check if we're in the right state to set remote description
+        if (peer && (peer.signalingState === "have-local-offer")) {
+          await setRemoteAns(ans);
+          console.log("✅ Remote answer set successfully");
+          console.log("📊 New signaling state:", peer.signalingState);
+        } else {
+          console.warn(`⚠️ Cannot set remote answer in state: ${peer?.signalingState}`);
+          
+          // If connection is already stable, that's fine
+          if (peer?.signalingState === "stable") {
+            console.log("📶 Connection already established");
+          }
+        }
       } catch (err) {
         console.error("❌ Error setting remote answer:", err);
+        
+        // Try to recover from error
+        if (err.name === "InvalidStateError") {
+          console.log("🔄 Attempting to recover from InvalidStateError...");
+          
+          // Reset connection and try again
+          try {
+            // Create new offer
+            const newOffer = await createOffer();
+            
+            // Send new offer to remote peer
+            if (socket && remoteSocketIdRef.current && state.remoteEmail) {
+              socket.emit("call-user", {
+                emailId: state.remoteEmail,
+                offer: newOffer,
+                socketId: remoteSocketIdRef.current,
+              });
+            }
+          } catch (recoveryErr) {
+            console.error("❌ Recovery failed:", recoveryErr);
+          }
+        }
+      } finally {
+        // Reset the processed flag after a delay
+        setTimeout(() => {
+          answerProcessedRef.current = false;
+        }, 1000);
       }
     },
-    [setRemoteAns],
+    [setRemoteAns, peer, socket, state.remoteEmail, createOffer],
   );
 
   // ------------------ Local Media ------------------
@@ -339,6 +378,27 @@ const RoomPage = () => {
     };
   }, [socket, roomId]);
   // ===================================================
+
+  // ================ ADD Signaling State Debugging ================
+  useEffect(() => {
+    if (!peer) return;
+
+    const handleSignalingStateChange = () => {
+      console.log("📡 Signaling state changed to:", peer.signalingState);
+    };
+
+    const handleConnectionStateChange = () => {
+      console.log("🔗 Connection state changed to:", peer.connectionState);
+    };
+
+    peer.addEventListener('signalingstatechange', handleSignalingStateChange);
+    peer.addEventListener('connectionstatechange', handleConnectionStateChange);
+
+    return () => {
+      peer.removeEventListener('signalingstatechange', handleSignalingStateChange);
+      peer.removeEventListener('connectionstatechange', handleConnectionStateChange);
+    };
+  }, [peer]);
 
   // ------------------ Debug WebRTC Connection ------------------
   useEffect(() => {
@@ -482,12 +542,8 @@ const RoomPage = () => {
 
   //  -------------------Copy Meeting Link---------------------------------
   const copyMeetingLink = async () => {
-    const link = `${window.location.origin}/room/${roomId}`;
-
-   const message = `Video Meeting Invitation
-Website: ${window.location.origin}
-Room ID: ${roomId}
-`;
+    const message = `Video Meeting Invitation\n\nWebsite: ${window.location.origin}\nRoom ID: ${roomId}`;
+    
     try {
       await navigator.clipboard.writeText(message);
       toast.success("Meeting link copied!", {
@@ -532,7 +588,7 @@ Room ID: ${roomId}
   };
   // ====================================================
 
-  // ------------------ Socket Events ------------------
+  // ================ UPDATED Socket Events ================
   useEffect(() => {
     if (!socket) return;
 
@@ -547,7 +603,17 @@ Room ID: ${roomId}
 
     socket.on("incoming-call", handleIncomingCall);
 
-    socket.on("call-accepted", handleCallAccepted);
+    socket.on("call-accepted", ({ ans, from }) => {
+      console.log("📨 Received answer from:", from);
+      
+      // Prevent processing the same answer multiple times
+      if (!answerProcessedRef.current) {
+        answerProcessedRef.current = true;
+        handleCallAccepted({ ans });
+      } else {
+        console.log("⚠️ Answer already processed, ignoring duplicate");
+      }
+    });
 
     socket.on("chat-message", (data) => {
       dispatch({ type: "ADD_MESSAGE", payload: data });
@@ -567,7 +633,6 @@ Room ID: ${roomId}
       }
     });
 
-    // ================ UPDATE THIS EVENT HANDLER ================
     // user-left event - WHEN SOMEONE ELSE LEAVES
     socket.on("user-left", ({ socketId, reason }) => {
       console.log("🚪 Another user left:", socketId, "Reason:", reason);
@@ -603,7 +668,6 @@ Room ID: ${roomId}
         window.location.href = "/";
       }, 3000);
     });
-    // ===========================================================
 
     // Socket error handling
     socket.on("connect_error", (error) => {
@@ -616,12 +680,12 @@ Room ID: ${roomId}
       socket.off("joined-room");
       socket.off("user-joined", handleNewUserJoined);
       socket.off("incoming-call", handleIncomingCall);
-      socket.off("call-accepted", handleCallAccepted);
+      socket.off("call-accepted");
       socket.off("chat-message");
       socket.off("user-left");
       socket.off("connect_error");
     };
-  }, [socket, handleNewUserJoined, handleIncomingCall, handleCallAccepted, state.isCallActive]);
+  }, [socket, handleNewUserJoined, handleIncomingCall, handleCallAccepted, state.isCallActive, getCallDurationText, cleanupEverything]);
 
   // ------------------ toggleCamera ------------------
   const toggleCamera = () => {
