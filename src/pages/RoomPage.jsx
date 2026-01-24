@@ -1064,7 +1064,7 @@ const RoomPage = () => {
 
         <div
           onClick={toggleMic}
-          className={`p-3 rounded-full bg-[#364355] hover:bg-[#2e4361] cursor-pointer ${state.micOn ? "bg-gray-900" : ""} `}
+          className={`hidden md:block  p-3 rounded-full bg-[#364355] hover:bg-[#2e4361] cursor-pointer ${state.micOn ? "bg-gray-900" : ""} `}
           title="Toggle Microphone"
         >
           {state.micOn ? <Mic /> : <MicOff />}
