@@ -484,7 +484,7 @@ const RoomPage = () => {
   const copyMeetingLink = async () => {
     const link = `${window.location.origin}/room/${roomId}`;
 
-    const message = `📹 Join my video meeting on MeetNow\n\n🔑 Room ID: ${roomId}\n🔗 Link: ${link}\n🌐 Live on: ${window.location.origin}`;
+    const message = `📹 Join my video meeting on MeetNow } 🌐 Live on: ${window.location.origin} \n\n🔑 Room ID: ${roomId`;
 
     try {
       await navigator.clipboard.writeText(message);
