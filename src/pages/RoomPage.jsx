@@ -12,23 +12,7 @@ import RealTimeClock from "../components/RealTimeClock";
 import CallTime from "../components/CallTime";
 
 // Import React-Icons
-import {
-  Mic,
-  MicOff,
-  Camera,
-  CameraOff,
-  Volume2,
-  Share2,
-  CircleAlert,
-  Clock,
-  Circle,
-  Headphones,
-  PhoneOff,
-  MessageSquareText,
-  MessageSquareOff,
-  X,
-  Users,
-} from "lucide-react";
+import {Mic,MicOff,Camera,CameraOff,Volume2,Share2,CircleAlert,Clock,Circle,Headphones,PhoneOff,MessageSquareText,MessageSquareOff,X,Users} from "lucide-react";
 
 // import toast to display Notification
 import toast, { Toaster } from "react-hot-toast";
@@ -100,7 +84,7 @@ const RoomPage = () => {
 
   // ================ ADD THIS FUNCTION ================
   const cleanupEverything = useCallback(() => {
-    console.log("🧹 Cleaning up all resources...");
+    console.log("Cleaning up all resources...");
     
     // Stop local stream
     if (state.myStream) {
@@ -153,24 +137,24 @@ const RoomPage = () => {
       if (setRemoteSocketId) {
         setRemoteSocketId(from);
       }
-      console.log("📲 Incoming call from socket ID:", from);
+      console.log("Incoming call from socket ID:", from);
 
       if (!state.streamReady) {
         pendingIncomingCall.current = { from, offer, fromName };
-        console.log("⏳ Stream not ready, incoming call pending...");
+        console.log("Stream not ready, incoming call pending...");
         return;
       }
 
       try {
-        console.log("📝 Creating answer for:", from);
+        console.log("Creating answer for:", from);
         const answer = await createAnswer(offer);
         socket.emit("call-accepted", {
           to: from,
           ans: answer,
         });
-        console.log("📨 Answer sent to:", from);
+        console.log("Answer sent to:", from);
       } catch (err) {
-        console.error("❌ Error creating answer:", err);
+        console.error("Error creating answer:", err);
       }
     },
     [createAnswer, socket, state.streamReady, setRemoteSocketId],
@@ -188,26 +172,26 @@ const RoomPage = () => {
       if (setRemoteSocketId) {
         setRemoteSocketId(socketId);
       }
-      console.log("✅ Remote socket ID stored:", socketId);
+      console.log("Remote socket ID stored:", socketId);
 
       // Store pending call if stream is not ready
       if (!state.streamReady) {
         pendingIncomingCall.current = { fromEmail: emailId, fromName: name, socketId };
-        console.log("⏳ Stream not ready, call pending...");
+        console.log("Stream not ready, call pending...");
         return;
       }
 
       try {
-        console.log("📞 Creating offer for:", emailId);
+        console.log("Creating offer for:", emailId);
         const offer = await createOffer();
         socket.emit("call-user", {
           emailId,
           offer,
           socketId: socketId,
         });
-        console.log("📨 Offer sent to:", emailId);
+        console.log("Offer sent to:", emailId);
       } catch (err) {
-        console.error("❌ Error creating offer:", err);
+        console.error("Error creating offer:", err);
       }
     },
     [createOffer, socket, state.streamReady, setRemoteSocketId],
@@ -217,28 +201,28 @@ const RoomPage = () => {
   const handleCallAccepted = useCallback(
     async ({ ans }) => {
       try {
-        console.log("✅ Setting remote answer");
-        console.log("📊 Peer connection state:", peer?.signalingState);
+        console.log("Setting remote answer");
+        console.log("Peer connection state:", peer?.signalingState);
         
         // Check if we're in the right state to set remote description
         if (peer && (peer.signalingState === "have-local-offer")) {
           await setRemoteAns(ans);
-          console.log("✅ Remote answer set successfully");
-          console.log("📊 New signaling state:", peer.signalingState);
+          console.log("Remote answer set successfully");
+          console.log("New signaling state:", peer.signalingState);
         } else {
-          console.warn(`⚠️ Cannot set remote answer in state: ${peer?.signalingState}`);
+          console.warn(`Cannot set remote answer in state: ${peer?.signalingState}`);
           
           // If connection is already stable, that's fine
           if (peer?.signalingState === "stable") {
-            console.log("📶 Connection already established");
+            console.log("Connection already established");
           }
         }
       } catch (err) {
-        console.error("❌ Error setting remote answer:", err);
+        console.error("Error setting remote answer:", err);
         
         // Try to recover from error
         if (err.name === "InvalidStateError") {
-          console.log("🔄 Attempting to recover from InvalidStateError...");
+          console.log("Attempting to recover from InvalidStateError...");
           
           // Reset connection and try again
           try {
@@ -254,7 +238,7 @@ const RoomPage = () => {
               });
             }
           } catch (recoveryErr) {
-            console.error("❌ Recovery failed:", recoveryErr);
+            console.error("Recovery failed:", recoveryErr);
           }
         }
       } finally {
@@ -270,7 +254,7 @@ const RoomPage = () => {
   // ------------------ Local Media ------------------
   const getUserMediaStream = useCallback(async () => {
     try {
-      console.log("🎥 Requesting camera and microphone access...");
+      console.log("Requesting camera and microphone access...");
 
       const constraints = {
         video: {
@@ -291,7 +275,7 @@ const RoomPage = () => {
       const audioTracks = stream.getAudioTracks();
       audioTracks.forEach((track) => {
         const settings = track.getSettings();
-        console.log("🔊 Audio settings after getUserMedia:", settings);
+        console.log("Audio settings after getUserMedia:", settings);
 
         track
           .applyConstraints({
@@ -303,29 +287,29 @@ const RoomPage = () => {
           });
       });
 
-      console.log("✅ Media devices accessed successfully");
+      console.log("Media devices accessed successfully");
       dispatch({ type: "SET_MY_STREAM", payload: stream });
 
       if (myVideoRef.current) {
         myVideoRef.current.srcObject = stream;
-        console.log("✅ Local video stream attached");
+        console.log("Local video stream attached");
       }
 
       await sendStream(stream);
       dispatch({ type: "SET_STREAM_READY", payload: true });
-      console.log("✅ Stream ready for WebRTC");
+      console.log("Stream ready for WebRTC");
 
       if (pendingIncomingCall.current) {
-        console.log("🔄 Processing pending incoming call...");
+        console.log("Processing pending incoming call...");
         handleIncomingCall(pendingIncomingCall.current);
         pendingIncomingCall.current = null;
       }
     } catch (err) {
-      console.error("❌ Error accessing media devices:", err);
+      console.error("Error accessing media devices:", err);
 
       if (err.name === "OverconstrainedError" || err.name === "ConstraintNotSatisfiedError") {
         try {
-          console.log("🔄 Trying fallback constraints...");
+          console.log("Trying fallback constraints...");
           const fallbackStream = await navigator.mediaDevices.getUserMedia({
             video: true,
             audio: true,
@@ -384,11 +368,11 @@ const RoomPage = () => {
     if (!peer) return;
 
     const handleSignalingStateChange = () => {
-      console.log("📡 Signaling state changed to:", peer.signalingState);
+      console.log("Signaling state changed to:", peer.signalingState);
     };
 
     const handleConnectionStateChange = () => {
-      console.log("🔗 Connection state changed to:", peer.connectionState);
+      console.log("Connection state changed to:", peer.connectionState);
     };
 
     peer.addEventListener('signalingstatechange', handleSignalingStateChange);
@@ -405,7 +389,7 @@ const RoomPage = () => {
     if (!peer) return;
 
     const logConnectionState = () => {
-      console.log("🔍 WebRTC Debug Info:", {
+      console.log("WebRTC Debug Info:", {
         connectionState: peer.connectionState,
         iceConnectionState: peer.iceConnectionState,
         iceGatheringState: peer.iceGatheringState,
@@ -431,17 +415,17 @@ const RoomPage = () => {
     if (!socket || !peer) return;
 
     const handleIncomingIceCandidate = ({ candidate, from }) => {
-      console.log("📥 Received ICE candidate from:", from, candidate);
+      console.log("Received ICE candidate from:", from, candidate);
       if (candidate && peer.remoteDescription) {
         peer.addIceCandidate(new RTCIceCandidate(candidate)).catch((err) => {
-          console.error("❌ Error adding ICE candidate:", err);
+          console.error("Error adding ICE candidate:", err);
         });
       }
     };
 
     const handleLocalIceCandidate = (event) => {
       if (event.candidate && remoteSocketIdRef.current && socket) {
-        console.log("📤 Sending ICE candidate to:", remoteSocketIdRef.current, event.candidate);
+        console.log("Sending ICE candidate to:", remoteSocketIdRef.current, event.candidate);
         socket.emit("ice-candidate", {
           to: remoteSocketIdRef.current,
           candidate: event.candidate,
@@ -453,13 +437,13 @@ const RoomPage = () => {
     peer.onicecandidate = handleLocalIceCandidate;
 
     peer.oniceconnectionstatechange = () => {
-      console.log("❄️ ICE Connection State:", peer.iceConnectionState);
+      console.log("ICE Connection State:", peer.iceConnectionState);
       if (peer.iceConnectionState === "failed") {
-        console.log("🔄 ICE failed, trying to restart...");
+        console.log("ICE failed, trying to restart...");
         try {
           peer.restartIce();
         } catch (err) {
-          console.error("❌ Failed to restart ICE:", err);
+          console.error("Failed to restart ICE:", err);
         }
       }
     };
@@ -488,7 +472,7 @@ const RoomPage = () => {
           playTimeout = setTimeout(() => {
             if (remoteVideoRef.current.paused) {
               remoteVideoRef.current.play().catch((err) => {
-                if (err.name !== "AbortError") console.error("❌ Error playing remote video:", err);
+                if (err.name !== "AbortError") console.error("Error playing remote video:", err);
               });
             }
           }, 50);
@@ -506,7 +490,7 @@ const RoomPage = () => {
   // If remote video is not received yet, retry connecting after 1 second
   useEffect(() => {
     if (!remoteStreamRef.current && state.remoteEmail && state.streamReady) {
-      console.log("🔄 Retrying connection to remote user...");
+      console.log("Retrying connection to remote user...");
       const retry = setTimeout(() => {
         handleNewUserJoined({
           emailId: state.remoteEmail,
@@ -522,7 +506,7 @@ const RoomPage = () => {
   useEffect(() => {
     if (state.remoteVideoReady && !state.isCallActive) {
       dispatch({ type: "START_CALL" });
-      console.log("⏱️ Call timer started");
+      console.log("Call timer started");
     }
   }, [state.remoteVideoReady, state.isCallActive]);
 
@@ -564,10 +548,9 @@ const RoomPage = () => {
     }
   };
 
-  // ================ UPDATE THIS FUNCTION ================
   // ------------------ Leave Room ------------------
   const leaveRoom = () => {
-    console.log("👋 Leaving room...");
+    console.log("Leaving room...");
     
     // Show leaving message
     toast.success("Leaving call...", {
@@ -586,17 +569,16 @@ const RoomPage = () => {
       window.location.href = "/";
     }, 2000);
   };
-  // ====================================================
 
   // ================ UPDATED Socket Events ================
   useEffect(() => {
     if (!socket) return;
 
-    console.log("🔌 Socket connected, setting up listeners...");
+    console.log("Socket connected, setting up listeners...");
 
     socket.on("joined-room", () => {
       dispatch({ type: "SET_HAS_JOINED_ROOM", payload: true });
-      console.log("✅ Joined room successfully");
+      console.log("Joined room successfully");
     });
 
     socket.on("user-joined", handleNewUserJoined);
@@ -604,14 +586,14 @@ const RoomPage = () => {
     socket.on("incoming-call", handleIncomingCall);
 
     socket.on("call-accepted", ({ ans, from }) => {
-      console.log("📨 Received answer from:", from);
+      console.log("Received answer from:", from);
       
       // Prevent processing the same answer multiple times
       if (!answerProcessedRef.current) {
         answerProcessedRef.current = true;
         handleCallAccepted({ ans });
       } else {
-        console.log("⚠️ Answer already processed, ignoring duplicate");
+        console.log("Answer already processed, ignoring duplicate");
       }
     });
 
@@ -635,7 +617,7 @@ const RoomPage = () => {
 
     // user-left event - WHEN SOMEONE ELSE LEAVES
     socket.on("user-left", ({ socketId, reason }) => {
-      console.log("🚪 Another user left:", socketId, "Reason:", reason);
+      console.log("Another user left:", socketId, "Reason:", reason);
       
       // Show message
       const callDuration = getCallDurationText();
@@ -671,12 +653,12 @@ const RoomPage = () => {
 
     // Socket error handling
     socket.on("connect_error", (error) => {
-      console.error("❌ Socket connection error:", error);
+      console.error("Socket connection error:", error);
       toast.error("Connection error. Please refresh.");
     });
 
     return () => {
-      console.log("🧹 Cleaning up socket listeners...");
+      console.log("Cleaning up socket listeners...");
       socket.off("joined-room");
       socket.off("user-joined", handleNewUserJoined);
       socket.off("incoming-call", handleIncomingCall);
@@ -778,7 +760,7 @@ const RoomPage = () => {
         if (audioOutputDevices.length > 0) {
           dispatch({ type: "SET_HANDFREE_DEVICE", payload: audioOutputDevices[0].deviceId });
           console.log(
-            "🔊 Available speakers:",
+            "Available speakers:",
             audioOutputDevices.map((s) => s.label),
           );
         }
@@ -837,7 +819,7 @@ const RoomPage = () => {
       dispatch({ type: "START_CALL" });
     }
 
-    console.log("✅ Remote video ready, call started");
+    console.log("Remote video ready, call started");
   };
 
   // ------------------ Chat ------------------
@@ -861,7 +843,7 @@ const RoomPage = () => {
   // This code waits until the microphone and camera are ready, then it automatically accepts the incoming call
   useEffect(() => {
     if (pendingIncomingCall.current && state.streamReady) {
-      console.log("🔄 Processing pending call now that stream is ready");
+      console.log("Processing pending call now that stream is ready");
       handleIncomingCall(pendingIncomingCall.current);
       pendingIncomingCall.current = null;
     }
@@ -873,13 +855,14 @@ const RoomPage = () => {
     if (savedData) {
       const { name: savedName } = JSON.parse(savedData);
       dispatch({ type: "SET_MY_NAME", payload: savedName });
-      console.log("👤 User name loaded:", savedName);
+      console.log("User name loaded:", savedName);
     }
   }, []);
 
   // UI/UX Design
   return (
     <div className="min-h-screen text-white flex bg-gradient-to-br from-gray-900 via-black to-blue-900">
+     
       {/* Header Inside Status & Clock */}
       <header className="fixed h-18 sm:h-16 flex items-center justify-between bg-[#000000] text-white shadow-2xl w-full p-2 sm:px-4">
         <div className="sm:flex items-center sm:space-x-4">
