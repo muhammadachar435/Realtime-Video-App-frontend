@@ -915,7 +915,7 @@ const RoomPage = () => {
             autoPlay
             playsInline
             onCanPlay={handleRemoteVideoReady}
-            className={`w-full h-full object-cover shadow-2xl rounded-md bg-[#0d1321] ${state.remoteCameraOn ? "block" : "hidden"} `}
+            className={`w-full h-full object-cover shadow-2xl rounded-md bg-[#0d1321] transform -scale-x-100 ${state.remoteCameraOn ? "block" : "hidden"} `}
           />
 
           {(remoteStreamRef.current || state.remoteEmail) && (
@@ -961,7 +961,7 @@ const RoomPage = () => {
             autoPlay
             playsInline
             muted
-            className={`w-full h-full rounded-md object-cover shadow-2xl bg-[#0d1321] ${state.cameraOn ? "block" : "hidden"} `}
+            className={`w-full h-full rounded-md object-cover shadow-2xl bg-[#0d1321] transform -scale-x-100 ${state.cameraOn ? "block" : "hidden"} `}
           />
 
           {/* Local Video User A Name */}
