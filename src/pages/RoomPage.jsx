@@ -1053,7 +1053,7 @@ const RoomPage = () => {
       <Toaster position="top-right" reverseOrder={false} />
 
       {/* BOTTOM CONTROL BAR */}
-      <div className="fixed flex flex-wrap w-full max-w-92 sm:max-w-md justify-center place-items-center gap-2.5 sm:gap-4 bottom-6 left-1/2 z-10 -translate-x-1/2 bg-[#0b1018] backdrop-blur-lg sm:px-2 py-3 rounded-xl shadow-lg">
+      <div className="fixed flex flex-wrap w-full max-w-92 sm:max-w-md justify-evenly place-items-center gap-2.5 sm:gap-4 bottom-6 left-1/2 z-10 -translate-x-1/2 bg-[#0b1018] backdrop-blur-lg sm:px-2 py-3 rounded-xl shadow-lg">
         <div
           onClick={toggleCamera}
           className={`p-3 rounded-full bg-[#364355] hover:bg-[#2e4361] cursor-pointer ${state.cameraOn ? "bg-gray-900" : ""} `}
