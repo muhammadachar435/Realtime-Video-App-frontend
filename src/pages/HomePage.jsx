@@ -17,6 +17,9 @@ import { toast } from "react-hot-toast";
 // Import useSocket
 import { useSocket } from "../providers/Socket";
 
+// Animation File
+import FloatingBackground from "../components/FloatingBackground";
+
 // HomePage Component
 const HomePage = () => {
   const { socket } = useSocket();
@@ -90,7 +93,11 @@ const HomePage = () => {
 
   // UI/UX Design
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-gray-900 via-black to-blue-900 p-4">
+    <div className="relative min-h-screen flex items-center justify-center bg-gradient-to-br from-gray-900 via-black to-blue-900 p-4">
+
+      {/* Floating Backgorund  */}
+      <FloatingBackground />
+      
       <div className="w-full max-w-md">
         {/* Header */}
         <div className="text-center mb-8">
