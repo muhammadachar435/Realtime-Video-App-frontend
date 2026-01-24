@@ -484,8 +484,10 @@ const RoomPage = () => {
   const copyMeetingLink = async () => {
     const link = `${window.location.origin}/room/${roomId}`;
 
-    const message = `📹 Join my video meeting on MeetNow } 🌐 Live on: ${window.location.origin} \n\n🔑 Room ID: ${roomId`;
-
+   const message = `Video Meeting Invitation
+Website: ${window.location.origin}
+Room ID: ${roomId}
+`;
     try {
       await navigator.clipboard.writeText(message);
       toast.success("Meeting link copied!", {
