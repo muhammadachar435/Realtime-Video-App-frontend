@@ -903,12 +903,12 @@ const RoomPage = () => {
       </header>
 
       {/* Video Capture */}
-      <div className="relative w-screen py-2 mt-16 sm:mt-14">
+      <div className="relative w-screen mt-16 sm:mt-14">
         {/* REMOTE VIDEO */}
         <div
           onClick={handleSwipped}
           className={`absolute transition-all duration-300 rounded-md bg-[#0d1321]
-      ${state.isSwapped ? "top-10 right-4 w-56 sm:w-56 h-36 z-20 shadow-2xl" : "top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 inset-0 w-full xl:max-w-4xl h-[95%] z-10"}
+      ${state.isSwapped ? "top-6 right-4 w-56 sm:w-56 h-36 z-20 shadow-2xl" : "top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 inset-0 w-full xl:max-w-4xl h-[95%] z-10"}
     `}
         >
           <video
@@ -954,7 +954,7 @@ const RoomPage = () => {
         <div
           onClick={handleSwipped}
           className={`absolute transition-all duration-300 rounded-md bg-[#0d1321]
-      ${state.isSwapped ? "top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 inset-0 w-full xl:max-w-4xl h-[95%] z-10" : "top-4 right-4 w-56 sm:w-56 h-36 z-20 shadow-2xl bg-gray-800"}
+      ${state.isSwapped ? "top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 inset-0 w-full xl:max-w-4xl h-[95%] z-10" : "top-6 right-4 w-56 sm:w-56 h-36 z-20 shadow-2xl bg-gray-800"}
     `}
         >
           <video
