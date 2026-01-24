@@ -903,7 +903,7 @@ const RoomPage = () => {
       </header>
 
       {/* Video Capture */}
-      <div className="relative w-screen py-2 mt-17 sm:mt-14">
+      <div className="relative w-screen py-2 mt-16 sm:mt-14">
         {/* REMOTE VIDEO */}
         <div
           onClick={handleSwipped}
