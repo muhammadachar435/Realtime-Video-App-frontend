@@ -1,5 +1,5 @@
 // Import hooks
-import { useEffect, useCallback, useRef, useReducer, useMemo, useState } from "react";
+import { useEffect, useCallback, useRef, useReducer, useMemo } from "react";
 
 // Import router
 import { useParams } from "react-router-dom";
@@ -51,7 +51,7 @@ const RoomPage = () => {
       noiseSuppressionEnabled: true,
       audioDevices: [],
       selectedAudioDevice: null,
-      audioProcessingActive: false,
+      audioProcessingActive: false, // CHANGED: Disable custom audio processing
     }),
     [],
   );
@@ -97,45 +97,6 @@ const RoomPage = () => {
 
     return durationText.trim();
   };
-
-  // ================ ADD THIS NEW FUNCTION ================
-  const cleanupEverything = () => {
-    console.log("🧹 Cleaning up all resources...");
-    
-    // Stop local stream
-    if (state.myStream) {
-      state.myStream.getTracks().forEach(track => track.stop());
-    }
-    
-    // Stop remote stream
-    if (remoteVideoRef.current?.srcObject) {
-      remoteVideoRef.current.srcObject.getTracks().forEach(track => track.stop());
-    }
-    
-    // Close peer connection
-    if (peer) {
-      peer.close();
-    }
-    
-    // Close audio context
-    if (audioContextRef.current && audioContextRef.current.state !== "closed") {
-      audioContextRef.current.close();
-    }
-    
-    // Reset remote video
-    if (remoteVideoRef.current) {
-      remoteVideoRef.current.srcObject = null;
-    }
-    
-    // Reset local video
-    if (myVideoRef.current) {
-      myVideoRef.current.srcObject = null;
-    }
-    
-    // Reset call timer
-    dispatch({ type: "END_CALL" });
-  };
-  // ======================================================
 
   // ------------------ Incoming Call ------------------
   const handleIncomingCall = useCallback(
@@ -236,19 +197,23 @@ const RoomPage = () => {
           facingMode: "user",
         },
         audio: {
+          // Let browser handle echo cancellation natively
           echoCancellation: true,
           noiseSuppression: true,
           autoGainControl: true,
+          // REMOVED: Google-specific flags and channelCount
         },
       };
 
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
 
+      // Verify audio quality
       const audioTracks = stream.getAudioTracks();
       audioTracks.forEach((track) => {
         const settings = track.getSettings();
         console.log("🔊 Audio settings after getUserMedia:", settings);
 
+        // Apply minimal constraints - browser knows best
         track
           .applyConstraints({
             echoCancellation: true,
@@ -267,10 +232,12 @@ const RoomPage = () => {
         console.log("✅ Local video stream attached");
       }
 
+      // Send the original stream (browser handles echo cancellation)
       await sendStream(stream);
       dispatch({ type: "SET_STREAM_READY", payload: true });
       console.log("✅ Stream ready for WebRTC");
 
+      // Handle pending incoming call automatically
       if (pendingIncomingCall.current) {
         console.log("🔄 Processing pending incoming call...");
         handleIncomingCall(pendingIncomingCall.current);
@@ -279,12 +246,13 @@ const RoomPage = () => {
     } catch (err) {
       console.error("❌ Error accessing media devices:", err);
 
+      // Fallback to simpler constraints
       if (err.name === "OverconstrainedError" || err.name === "ConstraintNotSatisfiedError") {
         try {
           console.log("🔄 Trying fallback constraints...");
           const fallbackStream = await navigator.mediaDevices.getUserMedia({
             video: true,
-            audio: true,
+            audio: true, // Let browser choose defaults
           });
 
           dispatch({ type: "SET_MY_STREAM", payload: fallbackStream });
@@ -302,7 +270,10 @@ const RoomPage = () => {
 
   // ------------------ Audio Processing ------------------
   useEffect(() => {
+    // DISABLED - Browser handles audio processing better
+    // This prevents the echo feedback loop
     return () => {
+      // Cleanup
       if (audioProcessorRef.current) {
         audioProcessorRef.current.disconnect();
       }
@@ -347,6 +318,7 @@ const RoomPage = () => {
   useEffect(() => {
     if (!socket || !peer) return;
 
+    // Handle incoming ICE candidates
     const handleIncomingIceCandidate = ({ candidate, from }) => {
       console.log("📥 Received ICE candidate from:", from, candidate);
       if (candidate && peer.remoteDescription) {
@@ -356,6 +328,7 @@ const RoomPage = () => {
       }
     };
 
+    // Handle local ICE candidate generation
     const handleLocalIceCandidate = (event) => {
       if (event.candidate && remoteSocketIdRef.current && socket) {
         console.log("📤 Sending ICE candidate to:", remoteSocketIdRef.current, event.candidate);
@@ -366,9 +339,11 @@ const RoomPage = () => {
       }
     };
 
+    // Set up event listeners
     socket.on("ice-candidate", handleIncomingIceCandidate);
     peer.onicecandidate = handleLocalIceCandidate;
 
+    // Handle ICE connection state changes
     peer.oniceconnectionstatechange = () => {
       console.log("❄️ ICE Connection State:", peer.iceConnectionState);
       if (peer.iceConnectionState === "failed") {
@@ -394,6 +369,7 @@ const RoomPage = () => {
   useEffect(() => {
     let playTimeout;
 
+    // handleTrackEvent
     const handleTrackEvent = (event) => {
       if (event.streams && event.streams[0]) {
         remoteStreamRef.current = event.streams[0];
@@ -401,14 +377,16 @@ const RoomPage = () => {
         if (remoteVideoRef.current) {
           remoteVideoRef.current.srcObject = remoteStreamRef.current;
 
+          // Small delay to avoid AbortError
           clearTimeout(playTimeout);
           playTimeout = setTimeout(() => {
+            // Only play if paused
             if (remoteVideoRef.current.paused) {
               remoteVideoRef.current.play().catch((err) => {
                 if (err.name !== "AbortError") console.error("❌ Error playing remote video:", err);
               });
             }
-          }, 50);
+          }, 50); // 50ms delay is enough
         }
       }
     };
@@ -457,28 +435,11 @@ const RoomPage = () => {
     }
   }, [remoteStreamRef.current]);
 
-  // ================ ADD THIS useEffect ================
-  // Handle page close/refresh
-  useEffect(() => {
-    const handleBeforeUnload = () => {
-      // Notify server when user closes tab or refreshes
-      if (socket && roomId) {
-        socket.emit("leave-room", { roomId });
-      }
-    };
-    
-    window.addEventListener("beforeunload", handleBeforeUnload);
-    
-    return () => {
-      window.removeEventListener("beforeunload", handleBeforeUnload);
-    };
-  }, [socket, roomId]);
-  // ===================================================
-
   //  -------------------Copy Meeting Link---------------------------------
   const copyMeetingLink = async () => {
     const link = `${window.location.origin}/room/${roomId}`;
 
+    // Updated message for production
     const message = `📹 Join my video meeting on MeetNow\n\n🔑 Room ID: ${roomId}\n🔗 Link: ${link}\n🌐 Live on: ${window.location.origin}`;
 
     try {
@@ -501,29 +462,77 @@ const RoomPage = () => {
     }
   };
 
-  // ================ UPDATE THIS FUNCTION ================
   // ------------------ Leave Room ------------------
   const leaveRoom = () => {
-    console.log("👋 Leaving room...");
-    
-    // Show leaving message
-    toast.success("Leaving call...", {
-      duration: 1500,
-      icon: "👋",
-    });
-    
-    // Notify server I'm leaving
+    // Calculate total call duration
+    const callDuration = getCallDurationText();
+
+    // Show toast with call duration
+    if (state.isCallActive) {
+      toast.success(`Call ended. Duration: ${callDuration}`, {
+        duration: 5000,
+        icon: "📞",
+        style: {
+          background: "#1e293b",
+          color: "#fff",
+          padding: "16px",
+          borderRadius: "8px",
+        },
+      });
+    } else {
+      toast.success("Left the room", {
+        icon: "👋",
+        autoClose: 500,
+      });
+    }
+
+    // Stop all local tracks
+    if (state.myStream) {
+      state.myStream.getTracks().forEach((track) => track.stop());
+      console.log("🛑 Local media tracks stopped");
+    }
+
+    // Cleanup audio processing
+    if (audioProcessorRef.current) {
+      audioProcessorRef.current.disconnect();
+    }
+    if (audioContextRef.current && audioContextRef.current.state !== "closed") {
+      audioContextRef.current.close();
+    }
+
+    // Reset remote video
+    if (remoteVideoRef.current) {
+      if (remoteVideoRef.current.srcObject) {
+        remoteVideoRef.current.srcObject.getTracks().forEach((t) => t.stop());
+      }
+      remoteVideoRef.current.srcObject = null;
+    }
+
+    // Reset local video
+    if (myVideoRef.current) {
+      myVideoRef.current.srcObject = null;
+    }
+
+    // Reset peer connection
+    if (peer) {
+      peer.close();
+      console.log("🛑 Peer connection closed");
+    }
+
+    // Reset call timer
+    dispatch({ type: "END_CALL" });
+
+    // Notify server you left
     if (socket && roomId) {
       socket.emit("leave-room", { roomId });
+      console.log("📤 Leave room notification sent");
     }
-    
-    // Clean up and redirect myself in 2 seconds
+
+    // Redirect after a short delay to allow toast to show
     setTimeout(() => {
-      cleanupEverything();
       window.location.href = "/";
-    }, 2000);
+    }, 1000);
   };
-  // ====================================================
 
   // ------------------ Socket Events ------------------
   useEffect(() => {
@@ -543,9 +552,12 @@ const RoomPage = () => {
     socket.on("call-accepted", handleCallAccepted);
 
     socket.on("chat-message", (data) => {
+      // Add to chat
       dispatch({ type: "ADD_MESSAGE", payload: data });
 
+      // Show toast for messages from others
       if (data.from !== socket.id) {
+        // Use data.senderName that comes from backend
         toast.custom(
           (t) => (
             <div className="bg-green-800 shadow-2xl text-white p-4 rounded-xl flex items-center gap-2 z-50">
@@ -560,43 +572,49 @@ const RoomPage = () => {
       }
     });
 
-    // ================ UPDATE THIS EVENT HANDLER ================
     // user-left
-    socket.on("user-left", ({ socketId, reason }) => {
-      console.log("🚪 Another user left:", socketId, "Reason:", reason);
-      
-      // Show message
-      const callDuration = getCallDurationText();
-      toast.custom(
-        (t) => (
-          <div className="bg-red-900 w-80 shadow-2xl text-white p-4 font-sans rounded-xl flex flex-col">
-            <div className="flex items-center gap-2">
-              <X className="w-5 h-5 text-red-300" />
-              <span className="font-semibold">Call Ended</span>
-            </div>
-            <div className="mt-2 text-sm">
-              Other participant left the call
-            </div>
-            {state.isCallActive && (
-              <div className="mt-1 text-xs opacity-90">
+    socket.on("user-left", ({ socketId }) => {
+      pendingIncomingCall.current = null;
+      remoteSocketIdRef.current = null;
+      console.log("🚪 User left:", socketId);
+
+      // Stop and reset remote video
+      if (remoteVideoRef.current && remoteVideoRef.current.srcObject) {
+        remoteVideoRef.current.srcObject.getTracks().forEach((t) => t.stop());
+        remoteVideoRef.current.srcObject = null;
+      }
+
+      // Reset remote stream reference
+      remoteStreamRef.current = null;
+
+      // Show toast for call duration when remote user leaves
+      if (state.isCallActive) {
+        const callDuration = getCallDurationText();
+        toast.custom(
+          (t) => (
+            <div className="bg-blue-900 w-72 shadow-2xl text-white p-4 font-sans rounded-xl flex flex-col">
+              <div className="flex items-center gap-2">
+                <CircleAlert className="w-5 h-5 text-yellow-400" />
+                <span className="font-semibold">User Disconnected</span>
+              </div>
+              <div className="mt-2 text-sm opacity-90">
                 Call duration: <span className="font-bold">{callDuration}</span>
               </div>
-            )}
-            <div className="mt-3 text-xs opacity-75">
-              Redirecting to home in 3 seconds...
             </div>
-          </div>
-        ),
-        { duration: 3000 },
-      );
-      
-      // Clean up and redirect in 3 seconds
-      setTimeout(() => {
-        cleanupEverything();
-        window.location.href = "/";
-      }, 3000);
+          ),
+          { duration: 5000 },
+        );
+      }
+
+      // Reset remote-related state
+      dispatch({ type: "SET_REMOTE_NAME", payload: null });
+      dispatch({ type: "SET_REMOTE_EMAIL", payload: null });
+      dispatch({ type: "SET_REMOTE_CAMERA", payload: false });
+      dispatch({ type: "SET_REMOTEVIDEOREADY", payload: false });
+
+      // End the call
+      dispatch({ type: "END_CALL" });
     });
-    // ===========================================================
 
     // Socket error handling
     socket.on("connect_error", (error) => {
@@ -616,16 +634,21 @@ const RoomPage = () => {
     };
   }, [socket, handleNewUserJoined, handleIncomingCall, handleCallAccepted, state.isCallActive]);
 
+  // ------------------ Camera, Mic, Handfree ------------------
+
   // ------------------ toggleCamera ------------------
   const toggleCamera = () => {
     if (!state.myStream) return;
 
     const newCameraState = !state.cameraOn;
 
+    // enable / disable camera track
     state.myStream.getVideoTracks().forEach((track) => (track.enabled = newCameraState));
 
+    // update my own state
     dispatch({ type: "TOGGLE_CAMERA" });
 
+    // send ONLY to other user in room
     socket.emit("camera-toggle", {
       cameraOn: newCameraState,
       roomId,
@@ -637,6 +660,7 @@ const RoomPage = () => {
   };
 
   //   ----------------- ToggleCamera ---------------------
+  // This code listens for the other user's camera ON/OFF and updates the screen
   useEffect(() => {
     if (!socket) return;
 
@@ -671,9 +695,11 @@ const RoomPage = () => {
     if (!remoteVideoRef.current || !state.myStream) return;
 
     if (!state.usingHandfree && state.handfreeDeviceId) {
+      // Switch to speaker mode
       try {
         await remoteVideoRef.current.setSinkId(state.handfreeDeviceId);
 
+        // DO NOT mute microphone - browser handles echo cancellation
         dispatch({ type: "TOGGLE_HANDFREE" });
         toast("Speaker Mode ON", {
           icon: "🔊",
@@ -684,6 +710,7 @@ const RoomPage = () => {
         toast.error("Failed to switch to speaker mode");
       }
     } else {
+      // Switch back to normal mode
       try {
         await remoteVideoRef.current.setSinkId("");
         dispatch({ type: "TOGGLE_HANDFREE" });
@@ -704,6 +731,7 @@ const RoomPage = () => {
 
         dispatch({ type: "SET_AUDIO_DEVICES", payload: audioInputDevices });
 
+        // Store first speaker for handfree mode
         if (audioOutputDevices.length > 0) {
           dispatch({ type: "SET_HANDFREE_DEVICE", payload: audioOutputDevices[0].deviceId });
           console.log(
@@ -722,6 +750,7 @@ const RoomPage = () => {
   // ------------------ Select Audio Device ------------------
   const selectAudioDevice = async (deviceId) => {
     try {
+      // Get current video constraints
       const videoTrack = state.myStream?.getVideoTracks()[0];
       const videoConstraints = videoTrack ? videoTrack.getSettings() : true;
 
@@ -737,6 +766,7 @@ const RoomPage = () => {
       dispatch({ type: "SET_MY_STREAM", payload: stream });
       dispatch({ type: "SELECT_AUDIO_DEVICE", payload: deviceId });
 
+      // Update peer connection with new stream
       if (sendStream) {
         await sendStream(stream);
       }
@@ -762,6 +792,7 @@ const RoomPage = () => {
   const handleRemoteVideoReady = () => {
     dispatch({ type: "SET_REMOTEVIDEOREADY", payload: true });
 
+    // Start call timer if not already started
     if (!state.isCallActive) {
       dispatch({ type: "START_CALL" });
     }
@@ -773,8 +804,10 @@ const RoomPage = () => {
   const sendMessage = () => {
     if (!state.messageText.trim()) return;
 
+    // Send message to other users in the room via socket
     socket.emit("chat-message", { roomId, from: socket.id, text: state.messageText });
 
+    // Add message to local chat list (sender side)
     dispatch({
       type: "ADD_MESSAGE",
       payload: {
@@ -784,8 +817,11 @@ const RoomPage = () => {
       },
     });
 
+    // Clear input box after sending
     dispatch({ type: "SET_MESSAGE_TEXT", payload: "" });
   };
+
+  // ------------------ Chat Message Listener ------------------
 
   // This code waits until the microphone and camera are ready, then it automatically accepts the incoming call
   useEffect(() => {
@@ -806,7 +842,24 @@ const RoomPage = () => {
     }
   }, []);
 
-  // UI/UX Design
+  // Debug function (optional, can be removed)
+  const debugWebRTC = () => {
+    console.log("=== WEBRTC DEBUG INFO ===");
+    console.log("Remote Socket ID:", remoteSocketIdRef.current);
+    console.log("Peer Connection:", peer);
+    console.log("ICE Servers:", peer?.getConfiguration()?.iceServers);
+    console.log("Connection State:", peer?.connectionState);
+    console.log("ICE Connection State:", peer?.iceConnectionState);
+    console.log("Remote Stream:", remoteStreamRef.current);
+    console.log("My Stream:", state.myStream);
+    console.log("Socket Connected:", socket?.connected);
+    console.log("Audio Processing Active:", state.audioProcessingActive);
+    console.log("Echo Cancellation:", state.echoCancellationEnabled);
+    console.log("Noise Suppression:", state.noiseSuppressionEnabled);
+    console.log("=========================");
+  };
+
+  // UI/UX Design - SAME AS BEFORE (unchanged)
   return (
     <div className="min-h-screen text-white flex bg-gradient-to-br from-gray-900 via-black to-blue-900">
       {/* Header Inside Status & Clock */}
@@ -908,7 +961,7 @@ const RoomPage = () => {
             autoPlay
             playsInline
             muted
-            className={`w-full h-full rounded-md object-cover shadow-2xl bg-[#0d1321] transform -scale-x-100 ${state.cameraOn ? "block" : "hidden"} `}
+            className={`w-full h-full rounded-md object-cover shadow-2xl bg-[#0d1321] transform -scale-x-100  ${state.cameraOn ? "block" : "hidden"} `}
           />
 
           {/* Local Video User A Name */}
