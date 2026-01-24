@@ -1,5 +1,5 @@
 // Import hooks
-import { useEffect, useCallback, useRef, useReducer, useMemo, useState } from "react";
+import { useEffect, useCallback, useRef, useReducer, useMemo } from "react";
 
 // Import router
 import { useParams } from "react-router-dom";
@@ -28,7 +28,7 @@ import {
   MessageSquareOff,
   X,
   Users,
-  FlipHorizontal2,
+  Ear,
 } from "lucide-react";
 
 // import toast to display Notification
@@ -42,12 +42,6 @@ const RoomPage = () => {
 
   // RoomID
   const { roomId } = useParams();
-
-  // ================ ADD THESE STATES ================
-  const [cameras, setCameras] = useState([]);
-  const [currentCameraIndex, setCurrentCameraIndex] = useState(0);
-  const [isFrontCamera, setIsFrontCamera] = useState(true);
-  // =================================================
 
   // Enhanced initialState
   const enhancedInitialState = useMemo(
@@ -78,6 +72,76 @@ const RoomPage = () => {
 
   // totalUsers
   const totalUsers = useMemo(() => (state.remoteName ? 2 : 1), [state.remoteName]);
+
+  // ------------------ Helper Functions ------------------
+  const getCallDurationText = () => {
+    if (!state.callStartTime) return "0 seconds";
+
+    const now = Date.now();
+    const elapsed = now - state.callStartTime;
+
+    const hours = Math.floor(elapsed / (1000 * 60 * 60));
+    const minutes = Math.floor((elapsed % (1000 * 60 * 60)) / (1000 * 60));
+    const seconds = Math.floor((elapsed % (1000 * 60)) / 1000);
+
+    let durationText = "";
+    if (hours > 0) {
+      durationText += `${hours} hour${hours > 1 ? "s" : ""}`;
+      if (minutes > 0) durationText += ` ${minutes} minute${minutes > 1 ? "s" : ""}`;
+    } else if (minutes > 0) {
+      durationText += `${minutes} minute${minutes > 1 ? "s" : ""}`;
+      if (seconds > 0 && minutes < 5) durationText += ` ${seconds} second${seconds > 1 ? "s" : ""}`;
+    } else {
+      durationText += `${seconds} second${seconds > 1 ? "s" : ""}`;
+    }
+
+    return durationText.trim();
+  };
+
+  // ================ ADD THIS FUNCTION ================
+  const cleanupEverything = () => {
+    console.log("🧹 Cleaning up all resources...");
+    
+    // Stop local stream
+    if (state.myStream) {
+      state.myStream.getTracks().forEach(track => track.stop());
+    }
+    
+    // Stop remote stream
+    if (remoteVideoRef.current?.srcObject) {
+      remoteVideoRef.current.srcObject.getTracks().forEach(track => track.stop());
+    }
+    
+    // Close peer connection
+    if (peer) {
+      peer.close();
+    }
+    
+    // Close audio context
+    if (audioContextRef.current && audioContextRef.current.state !== "closed") {
+      audioContextRef.current.close();
+    }
+    
+    // Reset remote video
+    if (remoteVideoRef.current) {
+      remoteVideoRef.current.srcObject = null;
+    }
+    
+    // Reset local video
+    if (myVideoRef.current) {
+      myVideoRef.current.srcObject = null;
+    }
+    
+    // Reset call timer
+    dispatch({ type: "END_CALL" });
+    
+    // Reset remote-related state
+    dispatch({ type: "SET_REMOTE_NAME", payload: null });
+    dispatch({ type: "SET_REMOTE_EMAIL", payload: null });
+    dispatch({ type: "SET_REMOTE_CAMERA", payload: false });
+    dispatch({ type: "SET_REMOTEVIDEOREADY", payload: false });
+  };
+  // ==================================================
 
   // ------------------ Incoming Call ------------------
   const handleIncomingCall = useCallback(
@@ -164,183 +228,17 @@ const RoomPage = () => {
     [setRemoteAns],
   );
 
-  // ================ ADD CAMERA DETECTION FUNCTION ================
-  const detectCameras = useCallback(async () => {
-    try {
-      const devices = await navigator.mediaDevices.enumerateDevices();
-      const videoDevices = devices.filter(device => device.kind === 'videoinput');
-      setCameras(videoDevices);
-      
-      console.log("📹 Available cameras:", videoDevices.map(cam => ({
-        label: cam.label || `Camera ${cam.deviceId.slice(0, 8)}`,
-        deviceId: cam.deviceId,
-        facingMode: cam.label?.toLowerCase().includes('front') ? 'user' : 
-                   cam.label?.toLowerCase().includes('back') ? 'environment' : 'user'
-      })));
-      
-      if (videoDevices.length > 0) {
-        // Check if any camera has facingMode info
-        const frontCam = videoDevices.find(cam => 
-          cam.label?.toLowerCase().includes('front') || 
-          cam.label?.toLowerCase().includes('facing: user')
-        );
-        
-        const backCam = videoDevices.find(cam => 
-          cam.label?.toLowerCase().includes('back') || 
-          cam.label?.toLowerCase().includes('facing: environment') ||
-          cam.label?.toLowerCase().includes('rear')
-        );
-        
-        if (frontCam) {
-          setIsFrontCamera(true);
-        } else if (backCam) {
-          setIsFrontCamera(false);
-        }
-      }
-    } catch (err) {
-      console.error("Error detecting cameras:", err);
-    }
-  }, []);
-
-  // ================ ADD SWITCH CAMERA FUNCTION ================
-  const switchCamera = useCallback(async () => {
-    if (cameras.length < 2) {
-      toast.error("Only one camera available");
-      return;
-    }
-
-    if (!state.myStream) {
-      toast.error("No active camera stream");
-      return;
-    }
-
-    try {
-      // Calculate next camera index
-      const nextIndex = (currentCameraIndex + 1) % cameras.length;
-      const nextCamera = cameras[nextIndex];
-      
-      console.log("🔄 Switching to camera:", nextCamera.label || `Camera ${nextIndex + 1}`);
-      
-      // Get current audio track
-      const audioTrack = state.myStream.getAudioTracks()[0];
-      
-      // Stop current video tracks
-      state.myStream.getVideoTracks().forEach(track => track.stop());
-      
-      // Determine facing mode based on camera label
-      const cameraLabel = nextCamera.label?.toLowerCase() || '';
-      let facingMode = 'user'; // Default to front
-      
-      if (cameraLabel.includes('back') || cameraLabel.includes('rear') || 
-          cameraLabel.includes('environment') || cameraLabel.includes('external')) {
-        facingMode = 'environment';
-        setIsFrontCamera(false);
-        toast("📷 Switched to Back Camera", { icon: "🔄" });
-      } else {
-        setIsFrontCamera(true);
-        toast("📷 Switched to Front Camera", { icon: "🔄" });
-      }
-      
-      // Get new video stream with selected camera
-      const constraints = {
-        video: {
-          deviceId: { exact: nextCamera.deviceId },
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
-          frameRate: { ideal: 30 },
-          facingMode: facingMode,
-        },
-        audio: audioTrack ? {
-          deviceId: audioTrack.getSettings().deviceId,
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        } : true
-      };
-
-      const newStream = await navigator.mediaDevices.getUserMedia(constraints);
-      
-      // Update state
-      dispatch({ type: "SET_MY_STREAM", payload: newStream });
-      setCurrentCameraIndex(nextIndex);
-      
-      // Update video element
-      if (myVideoRef.current) {
-        myVideoRef.current.srcObject = newStream;
-      }
-      
-      // Update peer connection
-      if (sendStream) {
-        await sendStream(newStream);
-      }
-      
-      console.log(`✅ Switched to ${facingMode === 'user' ? 'front' : 'back'} camera`);
-      
-    } catch (err) {
-      console.error("❌ Error switching camera:", err);
-      toast.error("Failed to switch camera");
-      
-      // Try fallback with simpler constraints
-      try {
-        const fallbackStream = await navigator.mediaDevices.getUserMedia({
-          video: state.cameraOn,
-          audio: true
-        });
-        
-        dispatch({ type: "SET_MY_STREAM", payload: fallbackStream });
-        
-        if (sendStream) {
-          await sendStream(fallbackStream);
-        }
-        
-        toast.success("Camera reset to default");
-      } catch (fallbackErr) {
-        console.error("Fallback also failed:", fallbackErr);
-      }
-    }
-  }, [cameras, currentCameraIndex, state.myStream, sendStream, state.cameraOn]);
-
-  // ================ UPDATE getUserMediaStream FUNCTION ================
-  const getUserMediaStream = useCallback(async (useFrontCamera = true) => {
+  // ------------------ Local Media ------------------
+  const getUserMediaStream = useCallback(async () => {
     try {
       console.log("🎥 Requesting camera and microphone access...");
 
-      await detectCameras();
-
-      // Get available cameras
-      const devices = await navigator.mediaDevices.enumerateDevices();
-      const videoDevices = devices.filter(device => device.kind === 'videoinput');
-      
-      let selectedCamera = null;
-      
-      if (videoDevices.length > 0) {
-        // Try to find front camera if requested
-        if (useFrontCamera) {
-          selectedCamera = videoDevices.find(device => 
-            device.label?.toLowerCase().includes('front') ||
-            device.label?.toLowerCase().includes('facing: user')
-          ) || videoDevices[0];
-          setIsFrontCamera(true);
-        } else {
-          // Try to find back camera
-          selectedCamera = videoDevices.find(device => 
-            device.label?.toLowerCase().includes('back') ||
-            device.label?.toLowerCase().includes('facing: environment') ||
-            device.label?.toLowerCase().includes('rear')
-          ) || videoDevices[0];
-          setIsFrontCamera(false);
-        }
-        
-        setCurrentCameraIndex(videoDevices.findIndex(device => device.deviceId === selectedCamera.deviceId));
-      }
-
       const constraints = {
         video: {
           width: { ideal: 1280 },
           height: { ideal: 720 },
           frameRate: { ideal: 30 },
-          facingMode: useFrontCamera ? "user" : "environment",
-          ...(selectedCamera && { deviceId: { exact: selectedCamera.deviceId } })
+          facingMode: "user",
         },
         audio: {
           echoCancellation: true,
@@ -349,17 +247,7 @@ const RoomPage = () => {
         },
       };
 
-      console.log("📹 Camera constraints:", constraints.video);
-
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
-
-      // Verify camera info
-      const videoTrack = stream.getVideoTracks()[0];
-      if (videoTrack) {
-        const settings = videoTrack.getSettings();
-        console.log("📹 Camera settings:", settings);
-        console.log("📹 Camera label:", videoTrack.label);
-      }
 
       const audioTracks = stream.getAudioTracks();
       audioTracks.forEach((track) => {
@@ -415,284 +303,9 @@ const RoomPage = () => {
         toast.error("Failed to access camera/microphone");
       }
     }
-  }, [sendStream, handleIncomingCall, detectCameras]);
+  }, [sendStream, handleIncomingCall]);
 
-  // ================ ADD toggleCamera FUNCTION ================
-  const toggleCamera = useCallback(async () => {
-    if (!state.myStream) return;
-
-    const newCameraState = !state.cameraOn;
-
-    if (newCameraState) {
-      // Turn camera ON
-      if (state.myStream.getVideoTracks().length === 0) {
-        // Need to get new stream with camera
-        try {
-          await getUserMediaStream(isFrontCamera);
-        } catch (err) {
-          console.error("Failed to enable camera:", err);
-          toast.error("Failed to enable camera");
-          return;
-        }
-      } else {
-        // Enable existing track
-        state.myStream.getVideoTracks().forEach((track) => {
-          track.enabled = true;
-          track.applyConstraints({
-            facingMode: isFrontCamera ? 'user' : 'environment'
-          }).catch(console.warn);
-        });
-      }
-    } else {
-      // Turn camera OFF - disable tracks but don't stop them
-      state.myStream.getVideoTracks().forEach((track) => {
-        track.enabled = false;
-      });
-    }
-
-    dispatch({ type: "TOGGLE_CAMERA" });
-
-    socket.emit("camera-toggle", {
-      cameraOn: newCameraState,
-      roomId,
-    });
-
-    toast(newCameraState ? "Camera ON" : "Camera OFF", {
-      icon: newCameraState ? "📹" : "📵",
-    });
-  }, [state.myStream, state.cameraOn, socket, roomId, getUserMediaStream, isFrontCamera]);
-
-  // ================ ADD toggleMic FUNCTION ================
-  const toggleMic = useCallback(() => {
-    if (!state.myStream) return;
-
-    const newMicState = !state.micOn;
-    state.myStream.getAudioTracks().forEach((t) => {
-      t.enabled = newMicState;
-    });
-
-    dispatch({ type: "TOGGLE_MIC" });
-
-    toast(newMicState ? "Mic ON" : "Mic OFF", {
-      icon: newMicState ? "🎤" : "🔇",
-    });
-  }, [state.myStream, state.micOn]);
-
-  // ================ ADD toggleHandfree FUNCTION ================
-  const toggleHandfree = useCallback(async () => {
-    if (!remoteVideoRef.current || !state.myStream) return;
-
-    if (!state.usingHandfree && state.handfreeDeviceId) {
-      // Switch to speaker mode
-      try {
-        await remoteVideoRef.current.setSinkId(state.handfreeDeviceId);
-
-        // DO NOT mute microphone - browser handles echo cancellation
-        dispatch({ type: "TOGGLE_HANDFREE" });
-        toast("Speaker Mode ON", {
-          icon: "🔊",
-          duration: 3000,
-        });
-      } catch (err) {
-        console.error("Failed to switch to speaker:", err);
-        toast.error("Failed to switch to speaker mode");
-      }
-    } else {
-      // Switch back to normal mode
-      try {
-        await remoteVideoRef.current.setSinkId("");
-        dispatch({ type: "TOGGLE_HANDFREE" });
-        toast("Headphone Mode ON", { icon: "🎧" });
-      } catch (err) {
-        console.error("Failed to switch to headphones:", err);
-      }
-    }
-  }, [state.usingHandfree, state.handfreeDeviceId, state.myStream]);
-
-  // ================ ADD cleanupEverything FUNCTION ================
-  const cleanupEverything = useCallback(() => {
-    console.log("🧹 Cleaning up all resources...");
-    
-    // Stop local stream
-    if (state.myStream) {
-      state.myStream.getTracks().forEach(track => track.stop());
-    }
-    
-    // Stop remote stream
-    if (remoteVideoRef.current?.srcObject) {
-      remoteVideoRef.current.srcObject.getTracks().forEach(track => track.stop());
-    }
-    
-    // Close peer connection
-    if (peer) {
-      peer.close();
-    }
-    
-    // Close audio context
-    if (audioContextRef.current && audioContextRef.current.state !== "closed") {
-      audioContextRef.current.close();
-    }
-    
-    // Reset remote video
-    if (remoteVideoRef.current) {
-      remoteVideoRef.current.srcObject = null;
-    }
-    
-    // Reset local video
-    if (myVideoRef.current) {
-      myVideoRef.current.srcObject = null;
-    }
-    
-    // Reset call timer
-    dispatch({ type: "END_CALL" });
-    
-    // Reset remote-related state
-    dispatch({ type: "SET_REMOTE_NAME", payload: null });
-    dispatch({ type: "SET_REMOTE_EMAIL", payload: null });
-    dispatch({ type: "SET_REMOTE_CAMERA", payload: false });
-    dispatch({ type: "SET_REMOTEVIDEOREADY", payload: false });
-    
-    // Reset camera state
-    setCurrentCameraIndex(0);
-    setIsFrontCamera(true);
-  }, [state.myStream, peer]);
-
-  // ================ ADD Helper Functions ================
-  const getCallDurationText = useCallback(() => {
-    if (!state.callStartTime) return "0 seconds";
-
-    const now = Date.now();
-    const elapsed = now - state.callStartTime;
-
-    const hours = Math.floor(elapsed / (1000 * 60 * 60));
-    const minutes = Math.floor((elapsed % (1000 * 60 * 60)) / (1000 * 60));
-    const seconds = Math.floor((elapsed % (1000 * 60)) / 1000);
-
-    let durationText = "";
-    if (hours > 0) {
-      durationText += `${hours} hour${hours > 1 ? "s" : ""}`;
-      if (minutes > 0) durationText += ` ${minutes} minute${minutes > 1 ? "s" : ""}`;
-    } else if (minutes > 0) {
-      durationText += `${minutes} minute${minutes > 1 ? "s" : ""}`;
-      if (seconds > 0 && minutes < 5) durationText += ` ${seconds} second${seconds > 1 ? "s" : ""}`;
-    } else {
-      durationText += `${seconds} second${seconds > 1 ? "s" : ""}`;
-    }
-
-    return durationText.trim();
-  }, [state.callStartTime]);
-
-  //  -------------------Copy Meeting Link---------------------------------
-  const copyMeetingLink = useCallback(async () => {
-    const link = `${window.location.origin}/room/${roomId}`;
-
-    const message = `📹 Join my video meeting on MeetNow\n\n🔑 Room ID: ${roomId}\n🔗 Link: ${link}\n🌐 Live on: ${window.location.origin}`;
-
-    try {
-      await navigator.clipboard.writeText(message);
-      toast.success("Meeting link copied!", {
-        icon: "🔗",
-        autoClose: 500,
-      });
-    } catch {
-      const textArea = document.createElement("textarea");
-      textArea.value = message;
-      document.body.appendChild(textArea);
-      textArea.select();
-      document.execCommand("copy");
-      document.body.removeChild(textArea);
-      toast.success("Meeting link copied!", {
-        icon: "🔗",
-        autoClose: 500,
-      });
-    }
-  }, [roomId]);
-
-  // ================ ADD leaveRoom FUNCTION ================
-  const leaveRoom = useCallback(() => {
-    console.log("👋 Leaving room...");
-    
-    // Show leaving message
-    toast.success("Leaving call...", {
-      duration: 1500,
-      icon: "👋",
-    });
-    
-    // Notify server I'm leaving
-    if (socket && roomId) {
-      socket.emit("leave-room", { roomId });
-    }
-    
-    // Clean up and redirect myself in 2 seconds
-    setTimeout(() => {
-      cleanupEverything();
-      window.location.href = "/";
-    }, 2000);
-  }, [socket, roomId, cleanupEverything]);
-
-  // ================ ADD Chat Functions ================
-  const handleChat = useCallback(() => {
-    dispatch({ type: "SET_CHATCLOSE", payload: !state.chatClose });
-  }, [state.chatClose]);
-
-  const handleSwipped = useCallback(() => {
-    dispatch({ type: "SET_IsSWAPPED", payload: !state.isSwapped });
-  }, []);
-
-  const handleRemoteVideoReady = useCallback(() => {
-    dispatch({ type: "SET_REMOTEVIDEOREADY", payload: true });
-
-    if (!state.isCallActive) {
-      dispatch({ type: "START_CALL" });
-    }
-
-    console.log("✅ Remote video ready, call started");
-  }, [state.isCallActive]);
-
-  const sendMessage = useCallback(() => {
-    if (!state.messageText.trim()) return;
-
-    socket.emit("chat-message", { roomId, from: socket.id, text: state.messageText });
-
-    dispatch({
-      type: "ADD_MESSAGE",
-      payload: {
-        from: socket.id,
-        text: state.messageText,
-        timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-      },
-    });
-
-    dispatch({ type: "SET_MESSAGE_TEXT", payload: "" });
-  }, [state.messageText, socket, roomId]);
-
-  // ================ USE EFFECTS START HERE ================
-  // Initial call to getUserMediaStream
-  useEffect(() => {
-    getUserMediaStream(true); // Start with front camera
-  }, [getUserMediaStream]);
-
-  // Detect cameras on component mount
-  useEffect(() => {
-    detectCameras();
-  }, [detectCameras]);
-
-  // Beforeunload handler
-  useEffect(() => {
-    const handleBeforeUnload = () => {
-      if (socket && roomId) {
-        socket.emit("leave-room", { roomId });
-      }
-    };
-    
-    window.addEventListener("beforeunload", handleBeforeUnload);
-    
-    return () => {
-      window.removeEventListener("beforeunload", handleBeforeUnload);
-    };
-  }, [socket, roomId]);
-
-  // Audio Processing
+  // ------------------ Audio Processing ------------------
   useEffect(() => {
     return () => {
       if (audioProcessorRef.current) {
@@ -704,7 +317,30 @@ const RoomPage = () => {
     };
   }, []);
 
-  // Debug WebRTC Connection
+  // Initial call to getUserMediaStream
+  useEffect(() => {
+    getUserMediaStream();
+  }, [getUserMediaStream]);
+
+  // ================ ADD THIS useEffect ================
+  // Handle page close/refresh
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      // Notify server when user closes tab or refreshes
+      if (socket && roomId) {
+        socket.emit("leave-room", { roomId });
+      }
+    };
+    
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    
+    return () => {
+      window.removeEventListener("beforeunload", handleBeforeUnload);
+    };
+  }, [socket, roomId]);
+  // ===================================================
+
+  // ------------------ Debug WebRTC Connection ------------------
   useEffect(() => {
     if (!peer) return;
 
@@ -730,7 +366,7 @@ const RoomPage = () => {
     };
   }, [peer]);
 
-  // ICE Candidates
+  // ------------------ ICE Candidates ------------------
   useEffect(() => {
     if (!socket || !peer) return;
 
@@ -777,7 +413,7 @@ const RoomPage = () => {
     };
   }, [socket, peer]);
 
-  // Remote Track
+  // ------------------ Remote Track ------------------
   useEffect(() => {
     let playTimeout;
 
@@ -844,52 +480,57 @@ const RoomPage = () => {
     }
   }, [remoteStreamRef.current]);
 
-  // Detect Audio Devices
-  useEffect(() => {
-    const detectAudioDevices = async () => {
-      try {
-        const devices = await navigator.mediaDevices.enumerateDevices();
-        const audioInputDevices = devices.filter((d) => d.kind === "audioinput");
-        const audioOutputDevices = devices.filter((d) => d.kind === "audiooutput");
+  //  -------------------Copy Meeting Link---------------------------------
+  const copyMeetingLink = async () => {
+    const link = `${window.location.origin}/room/${roomId}`;
 
-        dispatch({ type: "SET_AUDIO_DEVICES", payload: audioInputDevices });
+    const message = `📹 Join my video meeting on MeetNow\n\n🔑 Room ID: ${roomId}\n🔗 Link: ${link}\n🌐 Live on: ${window.location.origin}`;
 
-        // Store first speaker for handfree mode
-        if (audioOutputDevices.length > 0) {
-          dispatch({ type: "SET_HANDFREE_DEVICE", payload: audioOutputDevices[0].deviceId });
-          console.log(
-            "🔊 Available speakers:",
-            audioOutputDevices.map((s) => s.label),
-          );
-        }
-      } catch (err) {
-        console.error("Failed to enumerate devices:", err);
-      }
-    };
-
-    detectAudioDevices();
-  }, []);
-
-  // This code waits until the microphone and camera are ready, then it automatically accepts the incoming call
-  useEffect(() => {
-    if (pendingIncomingCall.current && state.streamReady) {
-      console.log("🔄 Processing pending call now that stream is ready");
-      handleIncomingCall(pendingIncomingCall.current);
-      pendingIncomingCall.current = null;
+    try {
+      await navigator.clipboard.writeText(message);
+      toast.success("Meeting link copied!", {
+        icon: "🔗",
+        autoClose: 500,
+      });
+    } catch {
+      const textArea = document.createElement("textarea");
+      textArea.value = message;
+      document.body.appendChild(textArea);
+      textArea.select();
+      document.execCommand("copy");
+      document.body.removeChild(textArea);
+      toast.success("Meeting link copied!", {
+        icon: "🔗",
+        autoClose: 500,
+      });
     }
-  }, [state.streamReady, handleIncomingCall]);
+  };
 
-  // SavedName Display MyName (You) ex: Ali => A
-  useEffect(() => {
-    const savedData = localStorage.getItem("userData");
-    if (savedData) {
-      const { name: savedName } = JSON.parse(savedData);
-      dispatch({ type: "SET_MY_NAME", payload: savedName });
-      console.log("👤 User name loaded:", savedName);
+  // ================ UPDATE THIS FUNCTION ================
+  // ------------------ Leave Room ------------------
+  const leaveRoom = () => {
+    console.log("👋 Leaving room...");
+    
+    // Show leaving message
+    toast.success("Leaving call...", {
+      duration: 1500,
+      icon: "👋",
+    });
+    
+    // Notify server I'm leaving
+    if (socket && roomId) {
+      socket.emit("leave-room", { roomId });
     }
-  }, []);
+    
+    // Clean up and redirect myself in 2 seconds
+    setTimeout(() => {
+      cleanupEverything();
+      window.location.href = "/";
+    }, 2000);
+  };
+  // ====================================================
 
-  // Socket Events
+  // ------------------ Socket Events ------------------
   useEffect(() => {
     if (!socket) return;
 
@@ -924,6 +565,7 @@ const RoomPage = () => {
       }
     });
 
+    // ================ UPDATE THIS EVENT HANDLER ================
     // user-left event - WHEN SOMEONE ELSE LEAVES
     socket.on("user-left", ({ socketId, reason }) => {
       console.log("🚪 Another user left:", socketId, "Reason:", reason);
@@ -959,6 +601,7 @@ const RoomPage = () => {
         window.location.href = "/";
       }, 3000);
     });
+    // ===========================================================
 
     // Socket error handling
     socket.on("connect_error", (error) => {
@@ -976,9 +619,29 @@ const RoomPage = () => {
       socket.off("user-left");
       socket.off("connect_error");
     };
-  }, [socket, handleNewUserJoined, handleIncomingCall, handleCallAccepted, state.isCallActive, getCallDurationText, cleanupEverything]);
+  }, [socket, handleNewUserJoined, handleIncomingCall, handleCallAccepted, state.isCallActive]);
 
-  // Camera toggle listener
+  // ------------------ toggleCamera ------------------
+  const toggleCamera = () => {
+    if (!state.myStream) return;
+
+    const newCameraState = !state.cameraOn;
+
+    state.myStream.getVideoTracks().forEach((track) => (track.enabled = newCameraState));
+
+    dispatch({ type: "TOGGLE_CAMERA" });
+
+    socket.emit("camera-toggle", {
+      cameraOn: newCameraState,
+      roomId,
+    });
+
+    toast(newCameraState ? "Camera ON" : "Camera OFF", {
+      icon: newCameraState ? "📹" : "📵",
+    });
+  };
+
+  //   ----------------- ToggleCamera ---------------------
   useEffect(() => {
     if (!socket) return;
 
@@ -992,7 +655,163 @@ const RoomPage = () => {
     return () => socket.off("camera-toggle", handleCameraToggle);
   }, [socket]);
 
-  // ================ RENDER UI ================
+  // --------------- toggleMic ----------------------
+  const toggleMic = () => {
+    if (!state.myStream) return;
+
+    const newMicState = !state.micOn;
+    state.myStream.getAudioTracks().forEach((t) => {
+      t.enabled = newMicState;
+    });
+
+    dispatch({ type: "TOGGLE_MIC" });
+
+    toast(newMicState ? "Mic ON" : "Mic OFF", {
+      icon: newMicState ? "🎤" : "🔇",
+    });
+  };
+
+  // ---------------- toggleHandFree -----------------------
+  const toggleHandfree = async () => {
+    if (!remoteVideoRef.current || !state.myStream) return;
+
+    if (!state.usingHandfree && state.handfreeDeviceId) {
+      try {
+        await remoteVideoRef.current.setSinkId(state.handfreeDeviceId);
+
+        dispatch({ type: "TOGGLE_HANDFREE" });
+        toast("Speaker Mode ON", {
+          icon: "🔊",
+          duration: 3000,
+        });
+      } catch (err) {
+        console.error("Failed to switch to speaker:", err);
+        toast.error("Failed to switch to speaker mode");
+      }
+    } else {
+      try {
+        await remoteVideoRef.current.setSinkId("");
+        dispatch({ type: "TOGGLE_HANDFREE" });
+        toast("Headphone Mode ON", { icon: "🎧" });
+      } catch (err) {
+        console.error("Failed to switch to headphones:", err);
+      }
+    }
+  };
+
+  // ------------------ Detect Audio Devices ------------------
+  useEffect(() => {
+    const detectAudioDevices = async () => {
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const audioInputDevices = devices.filter((d) => d.kind === "audioinput");
+        const audioOutputDevices = devices.filter((d) => d.kind === "audiooutput");
+
+        dispatch({ type: "SET_AUDIO_DEVICES", payload: audioInputDevices });
+
+        if (audioOutputDevices.length > 0) {
+          dispatch({ type: "SET_HANDFREE_DEVICE", payload: audioOutputDevices[0].deviceId });
+          console.log(
+            "🔊 Available speakers:",
+            audioOutputDevices.map((s) => s.label),
+          );
+        }
+      } catch (err) {
+        console.error("Failed to enumerate devices:", err);
+      }
+    };
+
+    detectAudioDevices();
+  }, []);
+
+  // ------------------ Select Audio Device ------------------
+  const selectAudioDevice = async (deviceId) => {
+    try {
+      const videoTrack = state.myStream?.getVideoTracks()[0];
+      const videoConstraints = videoTrack ? videoTrack.getSettings() : true;
+
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          deviceId: { exact: deviceId },
+          echoCancellation: true,
+          noiseSuppression: true,
+        },
+        video: videoConstraints,
+      });
+
+      dispatch({ type: "SET_MY_STREAM", payload: stream });
+      dispatch({ type: "SELECT_AUDIO_DEVICE", payload: deviceId });
+
+      if (sendStream) {
+        await sendStream(stream);
+      }
+
+      toast.success("Audio device changed");
+    } catch (err) {
+      console.error("Failed to switch audio device:", err);
+      toast.error("Failed to change audio device");
+    }
+  };
+
+  //  ----------------- Chat Handle ---------------------
+  const handleChat = () => {
+    dispatch({ type: "SET_CHATCLOSE", payload: !state.chatClose });
+  };
+
+  //  ----------------- handle Swipped---------------------
+  const handleSwipped = () => {
+    dispatch({ type: "SET_IsSWAPPED", payload: !state.isSwapped });
+  };
+
+  //  ----------------- handleRemoteVideoRead ---------------------
+  const handleRemoteVideoReady = () => {
+    dispatch({ type: "SET_REMOTEVIDEOREADY", payload: true });
+
+    if (!state.isCallActive) {
+      dispatch({ type: "START_CALL" });
+    }
+
+    console.log("✅ Remote video ready, call started");
+  };
+
+  // ------------------ Chat ------------------
+  const sendMessage = () => {
+    if (!state.messageText.trim()) return;
+
+    socket.emit("chat-message", { roomId, from: socket.id, text: state.messageText });
+
+    dispatch({
+      type: "ADD_MESSAGE",
+      payload: {
+        from: socket.id,
+        text: state.messageText,
+        timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+      },
+    });
+
+    dispatch({ type: "SET_MESSAGE_TEXT", payload: "" });
+  };
+
+  // This code waits until the microphone and camera are ready, then it automatically accepts the incoming call
+  useEffect(() => {
+    if (pendingIncomingCall.current && state.streamReady) {
+      console.log("🔄 Processing pending call now that stream is ready");
+      handleIncomingCall(pendingIncomingCall.current);
+      pendingIncomingCall.current = null;
+    }
+  }, [state.streamReady, handleIncomingCall]);
+
+  // SavedName Display MyName (You) ex: Ali => A
+  useEffect(() => {
+    const savedData = localStorage.getItem("userData");
+    if (savedData) {
+      const { name: savedName } = JSON.parse(savedData);
+      dispatch({ type: "SET_MY_NAME", payload: savedName });
+      console.log("👤 User name loaded:", savedName);
+    }
+  }, []);
+
+  // UI/UX Design
   return (
     <div className="min-h-screen text-white flex bg-gradient-to-br from-gray-900 via-black to-blue-900">
       {/* Header Inside Status & Clock */}
@@ -1168,8 +987,7 @@ const RoomPage = () => {
       <Toaster position="top-right" reverseOrder={false} />
 
       {/* BOTTOM CONTROL BAR */}
-      <div className="fixed flex flex-wrap w-full max-w-92 sm:max-w-xl justify-center place-items-center gap-2.5 sm:gap-4 bottom-6 left-1/2 z-10 -translate-x-1/2 bg-[#0b1018] backdrop-blur-lg sm:px-2 py-3 rounded-xl shadow-lg">
-        {/* Camera Toggle */}
+      <div className="fixed flex flex-wrap w-full max-w-92 sm:max-w-md justify-center place-items-center gap-2.5 sm:gap-4 bottom-6 left-1/2 z-10 -translate-x-1/2 bg-[#0b1018] backdrop-blur-lg sm:px-2 py-3 rounded-xl shadow-lg">
         <div
           onClick={toggleCamera}
           className={`p-3 rounded-full bg-[#364355] hover:bg-[#2e4361] cursor-pointer ${state.cameraOn ? "bg-gray-900" : ""} `}
@@ -1178,18 +996,6 @@ const RoomPage = () => {
           {state.cameraOn ? <Camera /> : <CameraOff />}
         </div>
 
-        {/* Camera Switch - Only show if multiple cameras available */}
-        {cameras.length > 1 && (
-          <div
-            onClick={switchCamera}
-            className="p-3 rounded-full bg-[#364355] hover:bg-[#2e4361] cursor-pointer"
-            title={`Switch to ${isFrontCamera ? "Back" : "Front"} Camera`}
-          >
-            <FlipHorizontal2 className="w-5 h-5" />
-          </div>
-        )}
-
-        {/* Mic Toggle */}
         <div
           onClick={toggleMic}
           className={`p-3 rounded-full bg-[#364355] hover:bg-[#2e4361] cursor-pointer ${state.micOn ? "bg-gray-900" : ""} `}
@@ -1198,7 +1004,6 @@ const RoomPage = () => {
           {state.micOn ? <Mic /> : <MicOff />}
         </div>
 
-        {/* Handfree/Speaker Toggle */}
         <div
           onClick={toggleHandfree}
           className={`p-3 rounded-full bg-[#364355] hover:bg-[#2e4361] cursor-pointer ${state.usingHandfree ? "bg-gray-900" : ""} `}
@@ -1207,7 +1012,6 @@ const RoomPage = () => {
           {state.usingHandfree ? <Headphones /> : <Volume2 />}
         </div>
 
-        {/* Chat Toggle */}
         <div
           onClick={handleChat}
           className={`relative p-3 rounded-full bg-[#364355] hover:bg-[#2e4361] cursor-pointer ${state.chatClose ? "bg-gray-900" : ""} `}
@@ -1216,31 +1020,22 @@ const RoomPage = () => {
           {state.chatClose ? <MessageSquareText /> : <MessageSquareOff />}
         </div>
 
-        {/* Share Link */}
         <div
           onClick={copyMeetingLink}
-          className="p-3 rounded-full bg-[#009776] hover:bg-[#048166] cursor-pointer"
+          className={`p-3 rounded-full bg-[#009776] hover:bg-[#048166] cursor-pointer`}
           title="Share Meeting Link"
         >
           <Share2 className="w-5 h-5" />
         </div>
 
-        {/* Leave Call */}
         <div
           onClick={leaveRoom}
-          className="p-3 rounded-full bg-[#ea002e] hover:bg-[#c7082e] cursor-pointer"
+          className={`p-3 rounded-full bg-[#ea002e] hover:bg-[#c7082e] cursor-pointer`}
           title="Leave Call"
         >
           <PhoneOff className="w-5 h-5" />
         </div>
       </div>
-
-      {/* Camera Indicator (Optional - shows current camera) */}
-      {state.cameraOn && cameras.length > 1 && (
-        <div className="fixed bottom-24 left-1/2 transform -translate-x-1/2 bg-black/70 backdrop-blur-sm text-white text-xs px-3 py-1.5 rounded-full z-20">
-          {isFrontCamera ? "📱 Front Camera" : "📷 Back Camera"}
-        </div>
-      )}
     </div>
   );
 };
