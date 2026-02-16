@@ -6,7 +6,7 @@ const SocketContext = createContext();
 const SocketProvider = ({ children }) => {
   // Use environment variable for production
   const backendUrl = process.env.NODE_ENV === 'production'
-    ? process.env.REACT_APP_BACKEND_URL || "https://realtime-video-app-backend-production.up.railway.app" || "https://realtime-video-app-backend-production-360a.up.railway.app/" // REPLACE
+    ? process.env.REACT_APP_BACKEND_URL || "https://realtime-video-app-backend-production-360a.up.railway.app/"  // REPLACE
     : "http://localhost:5001";
 
   const socket = useMemo(() => io(backendUrl, {
